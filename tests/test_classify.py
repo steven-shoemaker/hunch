@@ -101,8 +101,7 @@ def test_series_in_series_out_keeps_index() -> None:
     out = classify(titles, ["Sales", "Engineering"], client=Client(client=fake))
     assert list(out.index) == [10, 20]
     assert out.loc[20] == "Engineering"
-    with pytest.raises(HunchError, match="Series"):
-        classify(pd.DataFrame({"t": ["a"]}), ["a", "b"], client=Client(client=fake))
+    assert out.name == "label"
 
 
 def test_label_validation() -> None:

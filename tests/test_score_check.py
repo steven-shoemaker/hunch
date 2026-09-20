@@ -13,7 +13,7 @@ def scorer(state, questions):
     answers = {}
     for qid, q in questions.items():
         assert q.type == "score" and list(q.criteria) == LEVELS
-        value = 2.6 if qid in ("q", "hook") else 0.4
+        value = 2.6 if qid in ("score", "hook") else 0.4
         probs = {0: 0.05, 1: 0.05, 2: 0.2, 3: 0.7} if value > 2 else {0: 0.7, 1: 0.2, 2: 0.05, 3: 0.05}
         answers[qid] = score_answer(value, probs, 0.8, LEGEND)
     return response(**answers)
@@ -29,7 +29,7 @@ def test_score_returns_position_and_detail_returns_rating() -> None:
     assert rating.normalized == pytest.approx(2.6 / 3)
     assert rating.shape == "sure"
     assert len(fake.calls) == 1  # detail came from cache
-    assert fake.calls[0][1]["q"].instructions == "How strong is the hook?"
+    assert fake.calls[0][1]["score"].instructions == "How strong is the hook?"
 
 
 def test_dimensions_go_in_one_request() -> None:
@@ -57,11 +57,11 @@ def test_level_limits() -> None:
 
 def test_check_returns_bool_with_threshold_and_criteria() -> None:
     def handler(state, questions):
-        q = questions["q"]
+        q = questions["check"]
         assert q.type == "noul"
         assert q.instructions == "is spam"
         assert q.criteria == {"true": "unsolicited ads", "false": None}
-        return response(q=noul_answer(0.62))
+        return response(check=noul_answer(0.62))
 
     fake = FakeJev(handler)
     jev = Client(client=fake)

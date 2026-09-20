@@ -1,4 +1,4 @@
-"""classify / score / check / pick / rank. Lists in, lists out. Jev decides."""
+"""ask / classify / score / check / pick / rank. Lists, Series, or DataFrames in; same shape out."""
 
 from __future__ import annotations
 
@@ -19,6 +19,83 @@ T = TypeVar("T")
 
 MAX_CHOICE_OPTIONS = 255
 MIN_SCORE_LEVELS, MAX_SCORE_LEVELS = 2, 10
+
+
+# ----------------------------------------------------------------------------- containers
+
+
+@dataclass
+class Box:
+    """The caller's data, unpacked: items to judge plus how to pack answers back."""
+
+    items: list[Any]
+    kind: str  # "single" | "list" | "series" | "frame"
+    index: Any = None
+
+    @property
+    def pandas(self) -> bool:
+        return self.kind in ("series", "frame")
+
+    def out(self, rows: list[dict[str, Any]], *, detail: bool, squeeze: bool) -> Any:
+        """rows: one {name: rich answer} per item. Pack them the way the caller sent data.
+
+        Non-pandas: rich objects when detail, else bare values; squeeze drops the dict
+        for single-question verbs. Pandas: a DataFrame on the caller's index; detail
+        spreads each answer into name, name_p / name_level, name_confidence, name_shape;
+        squeeze returns the lone column as a Series.
+        """
+        if not self.pandas:
+            vals: list[Any] = [{k: (v if detail else bare(v)) for k, v in r.items()} for r in rows]
+            if squeeze:
+                vals = [next(iter(v.values())) for v in vals]
+            return vals[0] if self.kind == "single" else vals
+        import pandas as pd
+
+        flat = [
+            {col: val for k, v in r.items() for col, val in (flatten(k, v) if detail else {k: bare(v)}).items()}
+            for r in rows
+        ]
+        frame = pd.DataFrame(flat, index=self.index)
+        if squeeze and not detail:
+            return frame.iloc[:, 0]
+        return frame
+
+
+def box(data: Any) -> Box:
+    module = type(data).__module__.split(".")[0]
+    if module == "pandas":
+        if hasattr(data, "columns"):
+            clean = data.astype(object).where(data.notna(), None)
+            return Box(clean.to_dict("records"), "frame", data.index)
+        if hasattr(data, "tolist"):
+            return Box(list(data.tolist()), "series", data.index)
+    if isinstance(data, (list, tuple)):
+        return Box(list(data), "list")
+    return Box([data], "single")
+
+
+def bare(value: Any) -> Any:
+    if isinstance(value, Answer):
+        return value.label
+    if isinstance(value, Rating):
+        return value.score
+    if isinstance(value, Feeling):
+        return bool(value)
+    if isinstance(value, MultiAnswer):
+        return list(value.labels)
+    return value
+
+
+def flatten(name: str, value: Any) -> dict[str, Any]:
+    if isinstance(value, Answer):
+        return {name: value.label, f"{name}_p": value.p, f"{name}_confidence": value.confidence, f"{name}_shape": value.shape}
+    if isinstance(value, Rating):
+        return {name: value.score, f"{name}_level": value.level, f"{name}_confidence": value.confidence, f"{name}_shape": value.shape}
+    if isinstance(value, Feeling):
+        return {name: bool(value), f"{name}_p": value.p}
+    if isinstance(value, MultiAnswer):
+        return {name: list(value.labels), f"{name}_p": dict(value.probabilities)}
+    return {name: value}
 
 
 # ----------------------------------------------------------------------------- ask
@@ -63,13 +140,14 @@ def ask(
     """Ask several questions about the same data in one Jev request per item.
 
     questions maps a name to Classify(...), Rate(...), or Check(...). One item returns a
-    dict of name -> answer. A list returns a list of dicts. A pandas Series returns a
-    DataFrame with one column per question on the same index, ready to join.
+    dict of name -> answer; a list returns a list of dicts; a Series or DataFrame returns
+    a DataFrame with one column per question on the same index (detail=True spreads each
+    answer into several columns).
     """
     if not questions:
         raise HunchError("ask() needs at least one question.")
     jev = resolve(client)
-    items, wrap = _items(data)
+    data = box(data)
     built: dict[str, Any] = {}
     readers: dict[str, Callable[[dict[str, Any]], Any]] = {}
     for name, spec in questions.items():
@@ -99,27 +177,10 @@ def ask(
             readers[name] = lambda raw, t=spec.threshold: Feeling(float(raw["noul"]), t)
         else:
             raise HunchError(f"ask() question {name!r} must be Classify, Rate, or Check.")
-    states = [engine.build_state(item, context) for item in items]
+    states = [engine.build_state(item, context) for item in data.items]
     raws = engine.run(jev, states, built, label="ask")
-
-    def one(raw: dict[str, Any]) -> dict[str, Any]:
-        out = {name: readers[name](raw[name]) for name in built}
-        return out if detail else {name: _bare(value) for name, value in out.items()}
-
-    rows = [one(raw) for raw in raws]
-    if _is_series(data):
-        import pandas as pd  # optional dependency, only reached with a Series
-
-        return pd.DataFrame(rows, index=data.index)
-    return wrap(rows)
-
-
-def _bare(value: Any) -> Any:
-    if isinstance(value, Answer):
-        return value.label
-    if isinstance(value, Rating):
-        return value.score
-    return bool(value)
+    rows = [{name: readers[name](raw[name]) for name in built} for raw in raws]
+    return data.out(rows, detail=detail, squeeze=False)
 
 
 # ----------------------------------------------------------------------------- classify
@@ -143,11 +204,11 @@ def classify(
     Answer / MultiAnswer with the full distribution.
     """
     jev = resolve(client)
-    items, wrap = _items(data)
+    data = box(data)
     keys, describe, back = _labels(labels)
     if not keys:
         raise HunchError("classify() needs at least one label.")
-    states = [engine.build_state(item, context) for item in items]
+    states = [engine.build_state(item, context) for item in data.items]
 
     if multi_label:
         questions = {
@@ -163,12 +224,12 @@ def classify(
         }
         raws = engine.run(jev, states, questions, label="classify")
 
-        def multi(raw: dict[str, Any]) -> Any:
+        def multi(raw: dict[str, Any]) -> MultiAnswer:
             probs = {key: float(raw[f"l{i}"]["noul"]) for i, key in enumerate(keys)}
             chosen = [back(k) for k, p in sorted(probs.items(), key=lambda kv: -kv[1]) if p >= threshold]
-            return MultiAnswer(chosen, probs, threshold) if detail else chosen
+            return MultiAnswer(chosen, probs, threshold)
 
-        return wrap([multi(raw) for raw in raws])
+        return data.out([{"labels": multi(raw)} for raw in raws], detail=detail, squeeze=True)
 
     if len(keys) > MAX_CHOICE_OPTIONS:
         raise HunchError(f"classify() takes at most {MAX_CHOICE_OPTIONS} labels.")
@@ -177,12 +238,7 @@ def classify(
         criteria={key: describe.get(key) for key in keys},
     )
     raws = engine.run(jev, states, {"q": question}, label="classify")
-
-    def single(raw: dict[str, Any]) -> Any:
-        answer = _answer(jev, raw["q"], back)
-        return answer if detail else answer.label
-
-    return wrap([single(raw) for raw in raws])
+    return data.out([{"label": _answer(jev, raw["q"], back)} for raw in raws], detail=detail, squeeze=True)
 
 
 # ----------------------------------------------------------------------------- score
@@ -204,19 +260,15 @@ def score(
     is then a dict per item. detail=True returns Rating(s).
     """
     jev = resolve(client)
-    items, wrap = _items(data)
+    data = box(data)
     levels = _levels(levels)
-    dims = _dims(instructions, default="Where on this scale does the input fall?")
-    states = [engine.build_state(item, context) for item in items]
+    named = isinstance(instructions, Mapping)
+    dims = _dims(instructions, default="Where on this scale does the input fall?", base="score")
+    states = [engine.build_state(item, context) for item in data.items]
     questions = {name: Score(instructions=text, criteria=list(levels)) for name, text in dims.items()}
     raws = engine.run(jev, states, questions, label="score")
-
-    def one(raw: dict[str, Any]) -> Any:
-        ratings = {name: _rating(jev, raw[name]) for name in dims}
-        out = ratings if detail else {name: r.score for name, r in ratings.items()}
-        return out if isinstance(instructions, Mapping) else next(iter(out.values()))
-
-    return wrap([one(raw) for raw in raws])
+    rows = [{name: _rating(jev, raw[name]) for name in dims} for raw in raws]
+    return data.out(rows, detail=detail, squeeze=not named)
 
 
 # ----------------------------------------------------------------------------- check
@@ -238,28 +290,24 @@ def check(
     criteria={"true": ..., "false": ...} sharpens the boundary. detail=True returns Feeling(s).
     """
     jev = resolve(client)
-    items, wrap = _items(data)
-    dims = _dims(statement, default=None)
+    data = box(data)
+    named = isinstance(statement, Mapping)
+    dims = _dims(statement, default=None, base="check")
     crit = None
     if criteria:
         crit = {"true": criteria.get("true"), "false": criteria.get("false")}
-    states = [engine.build_state(item, context) for item in items]
+    states = [engine.build_state(item, context) for item in data.items]
     questions = {name: Noul(instructions=text, criteria=crit) for name, text in dims.items()}
     raws = engine.run(jev, states, questions, label="check")
-
-    def one(raw: dict[str, Any]) -> Any:
-        feelings = {name: Feeling(float(raw[name]["noul"]), threshold) for name in dims}
-        out = feelings if detail else {name: bool(f) for name, f in feelings.items()}
-        return out if isinstance(statement, Mapping) else next(iter(out.values()))
-
-    return wrap([one(raw) for raw in raws])
+    rows = [{name: Feeling(float(raw[name]["noul"]), threshold) for name in dims} for raw in raws]
+    return data.out(rows, detail=detail, squeeze=not named)
 
 
 # ----------------------------------------------------------------------------- pick
 
 
 def pick(
-    candidates: Sequence[Any],
+    candidates: Any,
     instructions: str,
     *,
     context: Any = None,
@@ -268,41 +316,42 @@ def pick(
 ) -> Any:
     """Choose the single best candidate. Jev compares them head to head in one Choice.
 
-    More than 255 candidates run as a tournament: heats of 255, then a final.
+    A list returns the winning item. A Series or DataFrame returns the winner's index
+    label, so df.loc[winner] is the row. More than 255 candidates run as a tournament.
     detail=True returns Pick with every candidate's probability.
     """
     jev = resolve(client)
-    field = list(candidates)
+    data = box(candidates)
+    if data.kind == "single":
+        raise HunchError("pick() needs a list, Series, or DataFrame of candidates.")
+    field = data.items
     if not field:
         raise HunchError("pick() needs at least one candidate.")
     if not instructions or not instructions.strip():
         raise HunchError("pick() needs instructions saying what 'best' means.")
+    keys = list(data.index) if data.pandas else field
     state = engine.build_state({"task": instructions}, context)
 
-    def heat(group: list[Any]) -> Pick:
+    def heat(group: list[int]) -> Pick:
         if len(group) == 1:
             return Pick(group[0], [(group[0], 1.0)], 1.0, "sure")
-        criteria = {f"c{i}": engine.jsonable(item) for i, item in enumerate(group)}
+        criteria = {f"c{i}": engine.jsonable(field[i]) for i in group}
         question = Choice(
             instructions={"task": instructions, "note": "Each option is one candidate."},
             criteria=criteria,
         )
         raw = engine.run(jev, [state], {"q": question}, label="pick")[0]["q"]
         probs = {cid: float(p) for cid, p in raw["probabilities"].items()}
-        ranked = sorted(
-            ((group[int(cid[1:])], p) for cid, p in probs.items()),
-            key=lambda pair: pair[1],
-            reverse=True,
-        )
-        winner = group[int(raw["choice"][1:])]
+        ranked = sorted(((int(cid[1:]), p) for cid, p in probs.items()), key=lambda t: t[1], reverse=True)
         confidence = float(raw["confidence"])
-        return Pick(winner, ranked, confidence, jev.policy.classify(probs, confidence))
+        return Pick(int(raw["choice"][1:]), ranked, confidence, jev.policy.classify(probs, confidence))
 
-    result = _tournament(field, heat)
+    result = _tournament(list(range(len(field))), heat)
+    result = Pick(keys[result.winner], [(keys[i], p) for i, p in result.ranked], result.confidence, result.shape)
     return result if detail else result.winner
 
 
-def _tournament(field: list[Any], heat: Callable[[list[Any]], Pick]) -> Pick:
+def _tournament(field: list[int], heat: Callable[[list[int]], Pick]) -> Pick:
     # ponytail: heats of 255 then a final; a bracket with seeding if fields get huge
     while len(field) > MAX_CHOICE_OPTIONS:
         field = [
@@ -316,36 +365,40 @@ def _tournament(field: list[Any], heat: Callable[[list[Any]], Pick]) -> Pick:
 
 
 def rank(
-    candidates: Sequence[Any],
+    candidates: Any,
     dimensions: str | Mapping[str, str],
     levels: Sequence[str],
     *,
     weights: Mapping[str, float] | None = None,
     context: Any = None,
     client: Client | None = None,
-) -> list[Ranked]:
+) -> Any:
     """Score every candidate on each dimension, weight, and sort best first.
 
     Composite = weighted mean of normalized (0–1) dimension scores. Weights default to 1.
-    Every candidate's dimensions go in one request; candidates run in parallel.
+    A list returns Ranked rows. A Series or DataFrame returns a DataFrame on the same
+    index with `composite` and one column per dimension, sorted best first.
     """
-    ratings = score(
-        list(candidates),
-        levels,
-        instructions=dimensions if isinstance(dimensions, Mapping) else {"score": dimensions},
-        context=context,
-        detail=True,
-        client=client,
-    )
-    names = list(ratings[0]) if ratings else []
+    data = box(candidates)
+    if data.kind == "single":
+        raise HunchError("rank() needs a list, Series, or DataFrame of candidates.")
+    dims = dimensions if isinstance(dimensions, Mapping) else {"score": dimensions}
+    ratings = score(data.items, levels, instructions=dims, context=context, detail=True, client=client)
+    names = list(dims)
     w = {name: float((weights or {}).get(name, 1.0)) for name in names}
     total = sum(w.values())
     if total <= 0:
         raise HunchError("rank() weights must sum to more than zero.")
-    rows = [
-        Ranked(item, sum(w[n] * r[n].normalized for n in names) / total, r)
-        for item, r in zip(candidates, ratings)
-    ]
+    composites = [sum(w[n] * r[n].normalized for n in names) / total for r in ratings]
+    if data.pandas:
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            [{"composite": c, **{n: r[n].score for n in names}} for c, r in zip(composites, ratings)],
+            index=data.index,
+        )
+        return frame.sort_values("composite", ascending=False)
+    rows = [Ranked(item, c, r) for item, c, r in zip(data.items, composites, ratings)]
     return sorted(rows, key=lambda row: row.composite, reverse=True)
 
 
@@ -381,23 +434,6 @@ async def rank_async(*args: Any, **kwargs: Any) -> Any:
 # ----------------------------------------------------------------------------- helpers
 
 
-def _is_series(data: Any) -> bool:
-    return type(data).__module__.split(".")[0] == "pandas" and hasattr(data, "tolist")
-
-
-def _items(data: Any) -> tuple[list[Any], Callable[[list[Any]], Any]]:
-    """Split data into items plus a function that rebuilds the caller's container."""
-    module = type(data).__module__.split(".")[0]
-    if module == "pandas":
-        if not hasattr(data, "tolist"):
-            raise HunchError("Pass a single column (a Series), not a DataFrame.")
-        index = data.index
-        return list(data.tolist()), lambda out: type(data)(out, index=index, dtype=object)
-    if isinstance(data, (list, tuple)):
-        return list(data), lambda out: out
-    return [data], lambda out: out[0]
-
-
 def _labels(labels: Any) -> tuple[list[str], dict[str, Any], Callable[[str], Any]]:
     """Normalize labels to (option keys, descriptions, key -> user label)."""
     if isinstance(labels, type) and issubclass(labels, Enum):
@@ -428,7 +464,7 @@ def _levels(levels: Sequence[str]) -> list[str]:
     return out
 
 
-def _dims(spec: Any, default: str | None) -> dict[str, str]:
+def _dims(spec: Any, default: str | None, base: str) -> dict[str, str]:
     if isinstance(spec, Mapping):
         if not spec:
             raise HunchError("Need at least one dimension.")
@@ -436,8 +472,8 @@ def _dims(spec: Any, default: str | None) -> dict[str, str]:
     if spec is None:
         if default is None:
             raise HunchError("A statement is required.")
-        return {"q": default}
-    return {"q": str(spec)}
+        return {base: default}
+    return {base: str(spec)}
 
 
 def _object(**fields: Any) -> dict[str, Any]:

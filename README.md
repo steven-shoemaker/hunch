@@ -48,7 +48,7 @@ Python 3.10+. Set `TYPESAFE_API_KEY` in your environment, or call `hunch.configu
 | `generate(target, n=1, instructions=None)` | your LLM, validated by pydantic | `target` or `list[target]` |
 | `ask(data, {name: Classify(...) \| Rate(...) \| Check(...)})` | all of the above, one request per item | dict per item, or a DataFrame for a Series |
 
-Hand any verb one item and you get one answer back. Hand it a list, a tuple, or a pandas Series and you get the same container back, same length, same index. Duplicate values are only asked once, and the distinct ones run in parallel across `max_workers` threads. All of them take `context=` for extra state that should ride along with the input, and `client=` if you don't want the default. There's an `_async` twin of each, too.
+Hand any verb one item and you get one answer back. Hand it a list, a tuple, or a pandas Series and you get the same container back, same length, same index. Hand it a DataFrame and each row is the thing being judged, so Jev sees every column, and the answers come back on the frame's index ready to `join`. Duplicate values are only asked once, and the distinct ones run in parallel across `max_workers` threads. All of them take `context=` for extra state that should ride along with the input, and `client=` if you don't want the default. There's an `_async` twin of each, too.
 
 `labels` can be a plain list, an `Enum` class (you get members back, not strings), or a dict of label to description when the names alone are ambiguous. On `score` and `check`, `instructions` can be a dict of name to question. Those go out as one request per item and you get a dict back per item, which is how you score five dimensions without five round trips.
 
@@ -68,7 +68,9 @@ answers = ask(prospects["JOB_TITLE"], {
 prospects = prospects.join(answers)
 ```
 
-`detail=True` fills the cells with `Answer` / `Rating` / `Feeling` objects instead of bare values.
+With a Series or DataFrame, `detail=True` spreads each answer into columns instead of handing you objects: `fit`, `fit_level`, `fit_confidence`, `fit_shape` for a score; `label`, `label_p`, `label_confidence`, `label_shape` for a classify; `check`, `check_p` for a check. No lambdas to unpack anything.
+
+`pick` on a Series or DataFrame returns the winner's index label, so `df.loc[best]` is the row. `rank` returns a DataFrame with `composite` and one column per dimension, sorted best first, on the same index.
 
 ### `detail=True`
 
