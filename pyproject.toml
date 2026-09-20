@@ -1,0 +1,34 @@
+[project]
+name = "hunch"
+version = "0.1.0"
+description = "Ask Jev over columns of data: closed-set questions, cached and joined back."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Steven Shoemaker" }]
+dependencies = [
+    "pandas>=2.0",
+    "typesafe-sdk>=0.5.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/steven-shoemaker/hunch"
+Repository = "https://github.com/steven-shoemaker/hunch"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hunch"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
