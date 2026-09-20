@@ -47,10 +47,33 @@ Python 3.10+. Set `TYPESAFE_API_KEY` in your environment, or call `hunch.configu
 | `rank(candidates, dimensions, levels, weights=None)` | Score per dimension | `Ranked` rows, best first |
 | `generate(target, n=1, instructions=None)` | your LLM, validated by pydantic | `target` or `list[target]` |
 | `ask(data, {name: Classify(...) \| Rate(...) \| Check(...)})` | all of the above, one request per item | dict per item, or a DataFrame for a Series |
+| `where(data, statement, columns=None, threshold=0.5)` | Noul per row, then filter | the rows that match, strongest first |
 
 Hand any verb one item and you get one answer back. Hand it a list, a tuple, or a pandas Series and you get the same container back, same length, same index. Hand it a DataFrame and each row is the thing being judged, so Jev sees every column, and the answers come back on the frame's index ready to `join`. Duplicate values are only asked once, and the distinct ones run in parallel across `max_workers` threads. All of them take `context=` for extra state that should ride along with the input, and `client=` if you don't want the default. There's an `_async` twin of each, too.
 
 `labels` can be a plain list, an `Enum` class (you get members back, not strings), or a dict of label to description when the names alone are ambiguous. On `score` and `check`, `instructions` can be a dict of name to question. Those go out as one request per item and you get a dict back per item, which is how you score five dimensions without five round trips.
+
+### Semantic WHERE
+
+`where` is the filter you wish SQL had. It keeps the rows for which a statement holds and returns them strongest match first. On a DataFrame, Jev reads every column unless you pass `columns=`; the whole row comes back either way.
+
+```python
+df.hunch.where("probably likes cats")
+df.hunch.where("is a decision-maker at a company that sells to enterprises", columns=["title", "company"], threshold=0.7)
+```
+
+`detail=True` returns all rows with `match` and `match_p` columns so you can draw your own line.
+
+### `df.hunch`
+
+Every verb is also on a `.hunch` accessor for DataFrames and Series, so it reads left to right in a notebook:
+
+```python
+df["review"].hunch.classify(["positive", "negative", "neutral"])
+df.hunch.ask({"vibe": Classify([...]), "red_flag": Check("...")})
+df.hunch.rank({"hook": "...", "clarity": "..."}, levels=[...])
+best = df.hunch.pick("the best first date for the person in context", context={"looking_for": ME})
+```
 
 ### Several questions, one request
 

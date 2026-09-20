@@ -23,7 +23,14 @@ from hunch.verbs import (
     rank_async,
     score,
     score_async,
+    where,
+    where_async,
 )
+
+try:  # df.hunch.<verb>() when pandas is installed
+    import hunch.accessor as _accessor  # noqa: F401
+except ImportError:
+    pass
 
 __all__ = [
     "Answer",
@@ -61,6 +68,8 @@ __all__ = [
     "rank_async",
     "score",
     "score_async",
+    "where",
+    "where_async",
 ]
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"

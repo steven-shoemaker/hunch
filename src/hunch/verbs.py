@@ -1,4 +1,4 @@
-"""ask / classify / score / check / pick / rank. Lists, Series, or DataFrames in; same shape out."""
+"""ask / classify / score / check / where / pick / rank. Lists, Series, or DataFrames in; same shape out."""
 
 from __future__ import annotations
 
@@ -303,6 +303,46 @@ def check(
     return data.out(rows, detail=detail, squeeze=not named)
 
 
+# ----------------------------------------------------------------------------- where
+
+
+def where(
+    data: Any,
+    statement: str,
+    *,
+    columns: Sequence[str] | None = None,
+    criteria: Mapping[str, str | None] | None = None,
+    context: Any = None,
+    threshold: float = 0.5,
+    detail: bool = False,
+    client: Client | None = None,
+) -> Any:
+    """Semantic filter: keep the rows (or items) for which the statement holds.
+
+    Results come back sorted by how strongly they match. columns= limits what Jev
+    reads from a DataFrame; the whole row is still returned. detail=True returns every
+    row with `match` and `match_p` columns instead of filtering.
+    """
+    data_box = box(data)
+    if data_box.kind == "single":
+        raise HunchError("where() needs a list, Series, or DataFrame.")
+    subject = data
+    if columns is not None:
+        if data_box.kind != "frame":
+            raise HunchError("columns= only applies to a DataFrame.")
+        subject = data[list(columns)]
+    feelings = check(subject, statement, criteria=criteria, context=context, threshold=threshold, detail=True, client=client)
+    if data_box.pandas:
+        match, p = feelings["check"], feelings["check_p"]
+        if detail:
+            return data.assign(match=match, match_p=p)
+        return data[match].loc[p[match].sort_values(ascending=False).index]
+    if detail:
+        return feelings
+    kept = [(item, f) for item, f in zip(data_box.items, feelings) if f]
+    return [item for item, _ in sorted(kept, key=lambda t: -t[1].p)]
+
+
 # ----------------------------------------------------------------------------- pick
 
 
@@ -421,6 +461,10 @@ async def score_async(*args: Any, **kwargs: Any) -> Any:
 
 async def check_async(*args: Any, **kwargs: Any) -> Any:
     return await asyncio.to_thread(check, *args, **kwargs)
+
+
+async def where_async(*args: Any, **kwargs: Any) -> Any:
+    return await asyncio.to_thread(where, *args, **kwargs)
 
 
 async def pick_async(*args: Any, **kwargs: Any) -> Any:
