@@ -4,7 +4,9 @@
 
 Plain functions on Jev. Lists in, lists out.
 
-[Jev](https://docs.typesafe.ai) is TypeSafe's System One model: you send state and typed questions, and you get labels, scores, and yes/no probabilities back. **hunch** turns that into six verbs you call like any other function. Code owns the workflow. Jev judges. An optional LLM may *propose* candidates; it never decides.
+[Jev](https://docs.typesafe.ai) is TypeSafe's System One model. You send it some state and a typed question, and it sends back a label, a score, or a yes/no probability instead of a paragraph. I think it's the most useful thing to happen to "AI in a for loop" in a while. Calling it raw is fiddly, though: build a state object, build a question object, dig the answer out of the response. hunch is the version I wanted, where each of those is one function call and you can hand it a list or a pandas column instead of one thing at a time.
+
+The rule the whole library follows: Jev decides, your code owns the workflow, and if an LLM is involved at all it only gets to propose candidates.
 
 ```python
 import hunch
@@ -20,6 +22,10 @@ hunch.score("Critical system failure", ["cosmetic", "degraded, workaround exists
 
 hunch.check("BUY NOW!!!", "is unsolicited advertising")
 # True
+
+drafts = hunch.generate(str, n=20, instructions="tweets introducing hunch")   # an LLM writes
+hunch.pick(drafts, "most likely to make a Python developer install it")      # Jev chooses
+# 'Most of my "AI" code was a for loop around a prompt and a JSON parser. ...'
 ```
 
 ## Install
@@ -28,7 +34,7 @@ hunch.check("BUY NOW!!!", "is unsolicited advertising")
 pip install hunch-jev
 ```
 
-Python 3.10+. Set `TYPESAFE_API_KEY`, or call `hunch.configure(api_key=...)`. Never put keys in source.
+Python 3.10+. Set `TYPESAFE_API_KEY` in your environment, or call `hunch.configure(api_key=...)` at startup. Keys don't belong in source files.
 
 ## Verbs
 
@@ -41,9 +47,9 @@ Python 3.10+. Set `TYPESAFE_API_KEY`, or call `hunch.configure(api_key=...)`. Ne
 | `rank(candidates, dimensions, levels, weights=None)` | Score per dimension | `Ranked` rows, best first |
 | `generate(target, n=1, instructions=None)` | your LLM, validated by pydantic | `target` or `list[target]` |
 
-Every verb takes a single item or a list / tuple / pandas Series and returns the same shape. Repeated values are asked once. Items run in parallel across `max_workers` threads. Every verb accepts `context=` (extra state alongside the input) and `client=`. Every verb has an `_async` twin.
+Hand any verb one item and you get one answer back. Hand it a list, a tuple, or a pandas Series and you get the same container back, same length, same index. Duplicate values are only asked once, and the distinct ones run in parallel across `max_workers` threads. All of them take `context=` for extra state that should ride along with the input, and `client=` if you don't want the default. There's an `_async` twin of each, too.
 
-`labels` may be a list, an `Enum` class (you get members back), or a mapping of label to description. `instructions` on `score` and `check` may be a mapping of name to question; the dimensions go in one request and you get a dict per item.
+`labels` can be a plain list, an `Enum` class (you get members back, not strings), or a dict of label to description when the names alone are ambiguous. On `score` and `check`, `instructions` can be a dict of name to question. Those go out as one request per item and you get a dict back per item, which is how you score five dimensions without five round trips.
 
 ### `detail=True`
 
@@ -57,7 +63,7 @@ The bare return is the answer. `detail=True` returns the whole distribution:
 | `check` | `Feeling` | `.p .threshold`, truthy at threshold |
 | `pick` | `Pick` | `.winner .ranked .confidence .shape .on()` |
 
-`.shape` is **your** policy on the distribution, not a Jev field:
+`.shape` is a judgment about the distribution, and the cutoffs are yours, not Jev's:
 
 | Shape | Meaning |
 | --- | --- |
@@ -74,11 +80,11 @@ seniority = level.on(
 )
 ```
 
-Cutoffs live on `ShapePolicy`. Confidence is how peaked the distribution is, not whether the label is true. Changing the policy never re-runs inference.
+Cutoffs live on `ShapePolicy`. One thing worth internalizing: confidence measures how peaked the distribution is, not whether the label is correct. A confidently wrong answer is still confident. Changing the policy never re-runs inference, because the cache stores the raw distribution and the shape is computed on the way out.
 
 ## Generate, rank, pick
 
-An LLM drafts. Jev scores and chooses. Code keeps the weights.
+This is the part where an LLM is allowed in the room. It writes the candidates. Jev scores them and picks. The weights stay in your code, so re-ranking after you change your mind costs nothing.
 
 ```python
 import hunch
@@ -108,11 +114,11 @@ hunch.classify(x, labels, client=jev)
 jev.usage   # calls, cache hits, tokens, model
 ```
 
-`hunch.configure(...)` takes the same arguments and sets the default used when `client=` is omitted. `cache=` persists raw Jev answers on disk keyed by state and question.
+`hunch.configure(...)` takes the same arguments and sets the default used when `client=` is omitted. `cache=` writes raw Jev answers to disk keyed by state and question, so re-running a script over the same data is free.
 
 ## Examples
 
-Each one is a single file with the data inline. The first three need only `TYPESAFE_API_KEY`.
+Each is a single file with the data inline, so you can run it as-is. The first three need only `TYPESAFE_API_KEY`. The last two also draft with an LLM, so they want an OpenRouter key.
 
 | File | Shows |
 | --- | --- |
@@ -124,7 +130,7 @@ Each one is a single file with the data inline. The first three need only `TYPES
 
 ## What this is not
 
-Jev does not invent labels. `labels` is the whole set of allowed answers. `generate` invents candidates; it has no tools and takes no actions. Open-ended writing and multi-step agents are out of scope.
+Jev does not invent labels. Whatever you pass as `labels` is the entire set of allowed answers, and that constraint is the point. `generate` is the one place invention happens, and it has no tools and takes no actions. If you want open-ended writing or a multi-step agent, this is the wrong library, on purpose.
 
 ## License
 
