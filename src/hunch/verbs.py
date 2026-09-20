@@ -100,7 +100,7 @@ def ask(
         else:
             raise HunchError(f"ask() question {name!r} must be Classify, Rate, or Check.")
     states = [engine.build_state(item, context) for item in items]
-    raws = engine.run(jev, states, built)
+    raws = engine.run(jev, states, built, label="ask")
 
     def one(raw: dict[str, Any]) -> dict[str, Any]:
         out = {name: readers[name](raw[name]) for name in built}
@@ -161,7 +161,7 @@ def classify(
             )
             for i, key in enumerate(keys)
         }
-        raws = engine.run(jev, states, questions)
+        raws = engine.run(jev, states, questions, label="classify")
 
         def multi(raw: dict[str, Any]) -> Any:
             probs = {key: float(raw[f"l{i}"]["noul"]) for i, key in enumerate(keys)}
@@ -176,7 +176,7 @@ def classify(
         instructions=instructions or "Which label best describes the input?",
         criteria={key: describe.get(key) for key in keys},
     )
-    raws = engine.run(jev, states, {"q": question})
+    raws = engine.run(jev, states, {"q": question}, label="classify")
 
     def single(raw: dict[str, Any]) -> Any:
         answer = _answer(jev, raw["q"], back)
@@ -209,7 +209,7 @@ def score(
     dims = _dims(instructions, default="Where on this scale does the input fall?")
     states = [engine.build_state(item, context) for item in items]
     questions = {name: Score(instructions=text, criteria=list(levels)) for name, text in dims.items()}
-    raws = engine.run(jev, states, questions)
+    raws = engine.run(jev, states, questions, label="score")
 
     def one(raw: dict[str, Any]) -> Any:
         ratings = {name: _rating(jev, raw[name]) for name in dims}
@@ -245,7 +245,7 @@ def check(
         crit = {"true": criteria.get("true"), "false": criteria.get("false")}
     states = [engine.build_state(item, context) for item in items]
     questions = {name: Noul(instructions=text, criteria=crit) for name, text in dims.items()}
-    raws = engine.run(jev, states, questions)
+    raws = engine.run(jev, states, questions, label="check")
 
     def one(raw: dict[str, Any]) -> Any:
         feelings = {name: Feeling(float(raw[name]["noul"]), threshold) for name in dims}
@@ -287,7 +287,7 @@ def pick(
             instructions={"task": instructions, "note": "Each option is one candidate."},
             criteria=criteria,
         )
-        raw = engine.run(jev, [state], {"q": question})[0]["q"]
+        raw = engine.run(jev, [state], {"q": question}, label="pick")[0]["q"]
         probs = {cid: float(p) for cid, p in raw["probabilities"].items()}
         ranked = sorted(
             ((group[int(cid[1:])], p) for cid, p in probs.items()),

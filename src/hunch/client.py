@@ -22,11 +22,14 @@ class Client:
         cache: str | Path | None = None,
         policy: ShapePolicy | None = None,
         max_workers: int = 8,
+        progress: bool | str = "auto",
     ) -> None:
         """Open a Jev client. Reads TYPESAFE_API_KEY and TYPESAFE_DEFAULT_MODEL when omitted.
 
         client= injects any object with a system_one(state=, questions=) method (tests, fakes).
         llm= is a LanguageModel for generate(). cache= persists answers on disk.
+        progress= shows a tqdm bar per verb call: True, False, or "auto" (10+ requests,
+        only when tqdm is installed).
         """
         if client is None:
             from typesafe_sdk import TypeSafeClient
@@ -44,6 +47,7 @@ class Client:
         self.cache = Cache(cache)
         self.policy = policy or ShapePolicy()
         self.max_workers = max(1, max_workers)
+        self.progress = progress
         self.meter = Meter()
 
     @property

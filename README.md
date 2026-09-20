@@ -135,6 +135,8 @@ jev.usage   # calls, cache hits, tokens, model
 
 `hunch.configure(...)` takes the same arguments and sets the default used when `client=` is omitted. `cache=` writes raw Jev answers to disk keyed by state and question, so re-running a script over the same data is free.
 
+Big columns get a progress bar. With `tqdm` installed (`pip install hunch-jev[progress]`) any call that needs 10 or more requests shows one, counting requests rather than rows, so it already reflects dedupe and cache hits. `progress=True` forces it on, `progress=False` turns it off.
+
 ## Examples
 
 Each is a single file with the data inline, so you can run it as-is. The first three need only `TYPESAFE_API_KEY`. The last two also draft with an LLM, so they want an OpenRouter key.

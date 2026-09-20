@@ -39,6 +39,7 @@ def run(
     client: Client,
     states: list[Any],
     questions: Mapping[str, Any],
+    label: str = "hunch",
 ) -> list[dict[str, RawAnswer]]:
     """Answer every question for every state. One request per distinct uncached state."""
     if not questions:
@@ -67,15 +68,41 @@ def run(
         return answers
 
     keys = list(todo)
+    bar = progress(client, len(keys), label)
     if len(keys) <= 1 or client.max_workers <= 1:
-        fetched = [one(key) for key in keys]
+        fetched = list(bar(map(one, keys)))
     else:
         with ThreadPoolExecutor(max_workers=client.max_workers) as pool:
-            fetched = list(pool.map(one, keys))
+            fetched = list(bar(pool.map(one, keys)))
     for key, answers in zip(keys, fetched):
         for index in todo[key]:
             results[index].update(answers)
     return results
+
+
+def progress(client: Client, total: int, label: str) -> Any:
+    """Return a wrapper that shows a tqdm bar over an iterator of requests, or a no-op."""
+    show = client.progress
+    if show == "auto":
+        show = total >= 10
+    if not show or total == 0:
+        return lambda it: it
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        if client.progress is True:
+            raise HunchError("progress=True needs tqdm: pip install tqdm") from None
+        return lambda it: it
+    return lambda it: tqdm(
+        it,
+        total=total,
+        desc=label,
+        unit="req",
+        dynamic_ncols=True,
+        leave=False,
+        bar_format="{desc:>10} {bar:24} {n_fmt}/{total_fmt} req {rate_fmt} {remaining}",
+        colour="#e6b422",
+    )
 
 
 def normalize(raw: Any, qid: str) -> RawAnswer:
