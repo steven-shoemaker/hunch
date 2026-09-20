@@ -8,6 +8,11 @@ from hunch.llm import LanguageModel, OpenAICompat, cerebras, openai, openrouter
 from hunch.shapes import Shape, ShapePolicy
 from hunch.usage import Usage
 from hunch.verbs import (
+    Check,
+    Classify,
+    Rate,
+    ask,
+    ask_async,
     check,
     check_async,
     classify,
@@ -22,6 +27,8 @@ from hunch.verbs import (
 
 __all__ = [
     "Answer",
+    "Check",
+    "Classify",
     "Client",
     "Feeling",
     "HunchError",
@@ -30,10 +37,13 @@ __all__ = [
     "OpenAICompat",
     "Pick",
     "Ranked",
+    "Rate",
     "Rating",
     "Shape",
     "ShapePolicy",
     "Usage",
+    "ask",
+    "ask_async",
     "cerebras",
     "check",
     "check_async",
@@ -53,4 +63,4 @@ __all__ = [
     "score_async",
 ]
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"

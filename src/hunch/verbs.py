@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, TypeVar
 
@@ -18,6 +19,107 @@ T = TypeVar("T")
 
 MAX_CHOICE_OPTIONS = 255
 MIN_SCORE_LEVELS, MAX_SCORE_LEVELS = 2, 10
+
+
+# ----------------------------------------------------------------------------- ask
+
+
+@dataclass(frozen=True)
+class Classify:
+    """One Choice question for ask(): same arguments as classify()."""
+
+    labels: Any
+    instructions: str | None = None
+
+
+@dataclass(frozen=True)
+class Rate:
+    """One Score question for ask(): same arguments as score()."""
+
+    levels: Sequence[str]
+    instructions: str | None = None
+
+
+@dataclass(frozen=True)
+class Check:
+    """One Noul question for ask(): same arguments as check()."""
+
+    statement: str
+    criteria: Mapping[str, str | None] | None = None
+    threshold: float = 0.5
+
+
+Spec = Classify | Rate | Check
+
+
+def ask(
+    data: Any,
+    questions: Mapping[str, Spec],
+    *,
+    context: Any = None,
+    detail: bool = False,
+    client: Client | None = None,
+) -> Any:
+    """Ask several questions about the same data in one Jev request per item.
+
+    questions maps a name to Classify(...), Rate(...), or Check(...). One item returns a
+    dict of name -> answer. A list returns a list of dicts. A pandas Series returns a
+    DataFrame with one column per question on the same index, ready to join.
+    """
+    if not questions:
+        raise HunchError("ask() needs at least one question.")
+    jev = resolve(client)
+    items, wrap = _items(data)
+    built: dict[str, Any] = {}
+    readers: dict[str, Callable[[dict[str, Any]], Any]] = {}
+    for name, spec in questions.items():
+        name = str(name)
+        if isinstance(spec, Classify):
+            keys, describe, back = _labels(spec.labels)
+            if not keys:
+                raise HunchError(f"ask() question {name!r} needs at least one label.")
+            if len(keys) > MAX_CHOICE_OPTIONS:
+                raise HunchError(f"ask() question {name!r} takes at most {MAX_CHOICE_OPTIONS} labels.")
+            built[name] = Choice(
+                instructions=spec.instructions or "Which label best describes the input?",
+                criteria={key: describe.get(key) for key in keys},
+            )
+            readers[name] = lambda raw, back=back: _answer(jev, raw, back)
+        elif isinstance(spec, Rate):
+            built[name] = Score(
+                instructions=spec.instructions or "Where on this scale does the input fall?",
+                criteria=_levels(spec.levels),
+            )
+            readers[name] = lambda raw: _rating(jev, raw)
+        elif isinstance(spec, Check):
+            crit = None
+            if spec.criteria:
+                crit = {"true": spec.criteria.get("true"), "false": spec.criteria.get("false")}
+            built[name] = Noul(instructions=spec.statement, criteria=crit)
+            readers[name] = lambda raw, t=spec.threshold: Feeling(float(raw["noul"]), t)
+        else:
+            raise HunchError(f"ask() question {name!r} must be Classify, Rate, or Check.")
+    states = [engine.build_state(item, context) for item in items]
+    raws = engine.run(jev, states, built)
+
+    def one(raw: dict[str, Any]) -> dict[str, Any]:
+        out = {name: readers[name](raw[name]) for name in built}
+        return out if detail else {name: _bare(value) for name, value in out.items()}
+
+    rows = [one(raw) for raw in raws]
+    if _is_series(data):
+        import pandas as pd  # optional dependency, only reached with a Series
+
+        return pd.DataFrame(rows, index=data.index)
+    return wrap(rows)
+
+
+def _bare(value: Any) -> Any:
+    if isinstance(value, Answer):
+        return value.label
+    if isinstance(value, Rating):
+        return value.score
+    return bool(value)
 
 
 # ----------------------------------------------------------------------------- classify
@@ -252,6 +354,10 @@ def rank(
 # ponytail: to_thread twins; a real AsyncTypeSafeClient path if event-loop throughput matters
 
 
+async def ask_async(*args: Any, **kwargs: Any) -> Any:
+    return await asyncio.to_thread(ask, *args, **kwargs)
+
+
 async def classify_async(*args: Any, **kwargs: Any) -> Any:
     return await asyncio.to_thread(classify, *args, **kwargs)
 
@@ -273,6 +379,10 @@ async def rank_async(*args: Any, **kwargs: Any) -> Any:
 
 
 # ----------------------------------------------------------------------------- helpers
+
+
+def _is_series(data: Any) -> bool:
+    return type(data).__module__.split(".")[0] == "pandas" and hasattr(data, "tolist")
 
 
 def _items(data: Any) -> tuple[list[Any], Callable[[list[Any]], Any]]:

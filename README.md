@@ -46,10 +46,29 @@ Python 3.10+. Set `TYPESAFE_API_KEY` in your environment, or call `hunch.configu
 | `pick(candidates, instructions)` | Choice over the candidates | the winning candidate |
 | `rank(candidates, dimensions, levels, weights=None)` | Score per dimension | `Ranked` rows, best first |
 | `generate(target, n=1, instructions=None)` | your LLM, validated by pydantic | `target` or `list[target]` |
+| `ask(data, {name: Classify(...) \| Rate(...) \| Check(...)})` | all of the above, one request per item | dict per item, or a DataFrame for a Series |
 
 Hand any verb one item and you get one answer back. Hand it a list, a tuple, or a pandas Series and you get the same container back, same length, same index. Duplicate values are only asked once, and the distinct ones run in parallel across `max_workers` threads. All of them take `context=` for extra state that should ride along with the input, and `client=` if you don't want the default. There's an `_async` twin of each, too.
 
 `labels` can be a plain list, an `Enum` class (you get members back, not strings), or a dict of label to description when the names alone are ambiguous. On `score` and `check`, `instructions` can be a dict of name to question. Those go out as one request per item and you get a dict back per item, which is how you score five dimensions without five round trips.
+
+### Several questions, one request
+
+When you want more than one thing about the same data, `ask` sends every question in a single Jev request per item. Each question is a small spec with the same arguments as its verb. A Series comes back as a DataFrame on the same index, so it joins straight onto your frame.
+
+```python
+from hunch import ask, Classify, Rate, Check
+
+answers = ask(prospects["JOB_TITLE"], {
+    "function": Classify(functions, FUNCTION_INSTRUCTIONS),
+    "seniority": Classify(seniorities, SENIORITY_INSTRUCTIONS),
+    "urgent": Check("this person should be contacted this week"),
+    "fit": Rate(["poor", "okay", "strong"], "How well does this title fit an enterprise sales motion?"),
+})
+prospects = prospects.join(answers)
+```
+
+`detail=True` fills the cells with `Answer` / `Rating` / `Feeling` objects instead of bare values.
 
 ### `detail=True`
 
