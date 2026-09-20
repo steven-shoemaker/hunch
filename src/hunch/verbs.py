@@ -101,12 +101,18 @@ def flatten(name: str, value: Any) -> dict[str, Any]:
 # ----------------------------------------------------------------------------- ask
 
 
+KEEP: Any = object()
+"""Default for split= / unsure=: keep the first answer."""
+
+
 @dataclass(frozen=True)
 class Classify:
     """One Choice question for ask(): same arguments as classify()."""
 
     labels: Any
     instructions: str | None = None
+    split: Any = KEEP
+    unsure: Any = KEEP
 
 
 @dataclass(frozen=True)
@@ -180,6 +186,13 @@ def ask(
     states = [engine.build_state(item, context) for item in data.items]
     raws = engine.run(jev, states, built, label="ask")
     rows = [{name: readers[name](raw[name]) for name in built} for raw in raws]
+    for name, spec in questions.items():
+        if isinstance(spec, Classify) and (spec.split is not KEEP or spec.unsure is not KEEP):
+            keys, describe, back = _labels(spec.labels)
+            answers = _resolve(jev, data.items, [r[str(name)] for r in rows], keys, describe, back,
+                               spec.instructions, context, spec.split, spec.unsure, detail)
+            for r, a in zip(rows, answers):
+                r[str(name)] = a
     return data.out(rows, detail=detail, squeeze=False)
 
 
@@ -194,6 +207,8 @@ def classify(
     instructions: str | None = None,
     context: Any = None,
     threshold: float = 0.5,
+    split: Any = KEEP,
+    unsure: Any = KEEP,
     detail: bool = False,
     client: Client | None = None,
 ) -> Any:
@@ -202,6 +217,11 @@ def classify(
     labels: a sequence of strings, an Enum class, or a mapping label -> description.
     Returns the label (an Enum member when labels is an Enum). detail=True returns
     Answer / MultiAnswer with the full distribution.
+
+    split= and unsure= are policies for shaky answers. split="rematch" re-asks between the
+    top two options for rows where two labels were close. Any other value is returned as
+    the label for those rows. unsure=<value> does the same for flat distributions. Both
+    default to keeping the first answer.
     """
     jev = resolve(client)
     data = box(data)
@@ -238,7 +258,49 @@ def classify(
         criteria={key: describe.get(key) for key in keys},
     )
     raws = engine.run(jev, states, {"q": question}, label="classify")
-    return data.out([{"label": _answer(jev, raw["q"], back)} for raw in raws], detail=detail, squeeze=True)
+    answers = [_answer(jev, raw["q"], back) for raw in raws]
+    answers = _resolve(jev, data.items, answers, keys, describe, back, instructions, context, split, unsure, detail)
+    return data.out([{"label": a} for a in answers], detail=detail, squeeze=True)
+
+
+def _resolve(
+    jev: Client,
+    items: list[Any],
+    answers: list[Any],
+    keys: list[str],
+    describe: dict[str, Any],
+    back: Callable[[str], Any],
+    instructions: str | None,
+    context: Any,
+    split: Any,
+    unsure: Any,
+    detail: bool,
+) -> list[Any]:
+    """Apply split= / unsure= policies. Rematches are batched by top-two pair."""
+    if split is KEEP and unsure is KEEP:
+        return answers
+    if detail and (split not in (KEEP, "rematch") or unsure is not KEEP):
+        raise HunchError("Literal split= / unsure= values need detail=False; use .on() for custom detail logic.")
+    out = list(answers)
+    if split == "rematch":
+        groups: dict[tuple[str, str], list[int]] = {}
+        for i, a in enumerate(answers):
+            if isinstance(a, Answer) and a.shape == "split":
+                groups.setdefault(tuple(a.top2), []).append(i)
+        for pair, idxs in groups.items():
+            question = Choice(
+                instructions=_object(question=instructions or "Which of these two labels fits the input better?", note="Only these two options apply."),
+                criteria={key: describe.get(key) for key in pair},
+            )
+            states = [engine.build_state(items[i], context) for i in idxs]
+            raws = engine.run(jev, states, {"q": question}, label="rematch")
+            for i, raw in zip(idxs, raws):
+                out[i] = _answer(jev, raw["q"], back)
+    elif split is not KEEP:
+        out = [split if isinstance(a, Answer) and a.shape == "split" else a for a in out]
+    if unsure is not KEEP:
+        out = [unsure if isinstance(a, Answer) and a.shape == "unsure" else a for a in out]
+    return out
 
 
 # ----------------------------------------------------------------------------- score

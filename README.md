@@ -121,14 +121,13 @@ The bare return is the answer. `detail=True` returns the whole distribution:
 | `split` | Two options are close |
 | `unsure` | Flat or weak evidence |
 
+The two common policies are arguments on `classify` (and on `Classify(...)` inside `ask`):
+
 ```python
-level = hunch.classify(title, ["IC", "Manager", "Director"], detail=True)
-seniority = level.on(
-    sure=level.label,
-    split=lambda: hunch.classify(title, level.top2),  # rematch the top two
-    unsure="review",
-)
+seniority = hunch.classify(df["title"], ["IC", "Manager", "Director"], split="rematch", unsure="review")
 ```
+
+`split="rematch"` re-asks between the top two labels, only for the rows that were split, batched and cached like everything else. Any other value is used as the label for those rows. `unsure="review"` does the same for flat distributions. Both default to keeping the first answer. For anything more custom, `detail=True` gives you the `Answer` and `.on(sure=, split=, unsure=)` branches on it; pass a callable for a branch that costs a call.
 
 Cutoffs live on `ShapePolicy`. One thing worth internalizing: confidence measures how peaked the distribution is, not whether the label is correct. A confidently wrong answer is still confident. Changing the policy never re-runs inference, because the cache stores the raw distribution and the shape is computed on the way out.
 
