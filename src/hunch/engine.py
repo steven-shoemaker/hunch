@@ -88,12 +88,8 @@ def progress(client: Client, total: int, label: str) -> Any:
         show = total >= 10
     if not show or total == 0:
         return lambda it: it
-    try:
-        from tqdm.auto import tqdm
-    except ImportError:
-        if client.progress is True:
-            raise HunchError("progress=True needs tqdm: pip install tqdm") from None
-        return lambda it: it
+    from tqdm import tqdm  # plain text bar: works in terminals and notebooks, no widget dependency
+
     return lambda it: tqdm(
         it,
         total=total,
@@ -113,14 +109,9 @@ def working(client: Client, label: str) -> Iterator[None]:
     if client.progress is False:
         yield
         return
-    try:
-        from tqdm.auto import tqdm
-    except ImportError:
-        if client.progress is True:
-            raise HunchError("progress=True needs tqdm: pip install tqdm") from None
-        yield
-        return
     import threading
+
+    from tqdm import tqdm
 
     bar = tqdm(total=1, desc=label, leave=True, bar_format="{desc:>10} {elapsed}", colour="#e6b422")
     done = threading.Event()

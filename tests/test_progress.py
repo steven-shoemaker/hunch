@@ -25,7 +25,6 @@ def test_progress_counts_only_uncached_distinct_requests(monkeypatch) -> None:
 
 
 def test_auto_threshold_and_off() -> None:
-    pytest.importorskip("tqdm")
     auto = Client(client=FakeJev(handler), progress="auto")
     it = iter([1])
     assert engine.progress(auto, 9, "x")(it) is it

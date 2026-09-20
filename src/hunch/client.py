@@ -28,8 +28,7 @@ class Client:
 
         client= injects any object with a system_one(state=, questions=) method (tests, fakes).
         llm= is a LanguageModel for generate(). cache= persists answers on disk.
-        progress= shows a tqdm bar per verb call: True, False, or "auto" (10+ requests,
-        only when tqdm is installed).
+        progress= shows a progress bar per verb call: True, False, or "auto" (10+ requests).
         """
         if client is None:
             from typesafe_sdk import TypeSafeClient
