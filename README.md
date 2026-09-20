@@ -1,5 +1,7 @@
 # hunch
 
+![hunch — lists in, lists out](https://raw.githubusercontent.com/steven-shoemaker/hunch/main/docs/banner.png)
+
 Plain functions on Jev. Lists in, lists out.
 
 [Jev](https://docs.typesafe.ai) is TypeSafe's System One model: you send state and typed questions, and you get labels, scores, and yes/no probabilities back. **hunch** turns that into six verbs you call like any other function. Code owns the workflow. Jev judges. An optional LLM may *propose* candidates; it never decides.
