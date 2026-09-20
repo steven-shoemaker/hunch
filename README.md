@@ -53,13 +53,17 @@ real = comments.hunch.where("describes an actual defect present in the diff",
                             columns=["comment"], context={"diff": diff}, threshold=0.7)
 ```
 
-**GTM: prospecting.**
+**GTM: ICP fit.** Pass the ideal customer profile as context and let Jev read every row against it.
 
 ```python
-buyers = prospects.hunch.where("is an economic buyer for a people-analytics tool",
-                               columns=["title", "company", "headcount"])
-prospects["seniority"] = prospects["title"].hunch.classify(
-    ["IC", "Manager", "Director", "Executive"], split="rematch", unsure="review")
+ICP = "B2B SaaS, 200 to 2,000 employees, sells to mid-market, has a RevOps or sales ops function, US or UK."
+
+prospects = prospects.join(prospects.hunch.ask({
+    "fit":   Rate(["not our buyer", "partial fit", "good fit", "textbook ICP"], "How well does this account match the ICP in context?"),
+    "buyer": Check("this person could sign or sponsor a purchase for their team"),
+}, context={"icp": ICP}))
+
+outreach = prospects[prospects.buyer].nlargest(50, "fit")
 ```
 
 **SEO: intent and thin content, then a title tag Jev picks from LLM drafts.**
