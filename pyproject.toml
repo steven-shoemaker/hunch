@@ -1,5 +1,5 @@
 [project]
-name = "hunch"
+name = "hunch-jev"
 version = "0.1.0"
 description = "Ask Jev over columns of data: closed-set questions, cached and joined back."
 readme = "README.md"

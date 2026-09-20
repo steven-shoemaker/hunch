@@ -59,7 +59,7 @@ Independent `ask` / `rate` / `feels` calls on the same value go in **one** Jev r
 ## Install
 
 ```sh
-pip install "hunch @ git+https://github.com/steven-shoemaker/hunch.git"
+pip install hunch-jev
 # or from a clone:
 pip install -e ".[dev]"
 ```
