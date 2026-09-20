@@ -1,6 +1,6 @@
 [project]
 name = "hunch-jev"
-version = "0.2.0"
+version = "0.2.1"
 description = "Plain function verbs on Jev: classify, score, check, pick, rank, generate."
 readme = "README.md"
 requires-python = ">=3.10"
