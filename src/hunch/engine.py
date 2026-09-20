@@ -99,9 +99,10 @@ def progress(client: Client, total: int, label: str) -> Any:
         total=total,
         desc=label,
         unit="req",
-        dynamic_ncols=True,
-        leave=False,
-        bar_format="{desc:>10} {bar:24} {n_fmt}/{total_fmt} req {rate_fmt} {remaining}",
+        miniters=1,
+        mininterval=0,
+        leave=True,
+        bar_format="{desc:>10} {bar:24} {n_fmt}/{total_fmt} req {elapsed}",
         colour="#e6b422",
     )
 
@@ -119,16 +120,22 @@ def working(client: Client, label: str) -> Iterator[None]:
             raise HunchError("progress=True needs tqdm: pip install tqdm") from None
         yield
         return
-    with tqdm(
-        total=1,
-        desc=label,
-        leave=False,
-        dynamic_ncols=True,
-        bar_format="{desc:>10} {elapsed}",
-        colour="#e6b422",
-    ) as bar:
+    import threading
+
+    bar = tqdm(total=1, desc=label, leave=True, bar_format="{desc:>10} {elapsed}", colour="#e6b422")
+    done = threading.Event()
+
+    def tick() -> None:  # tqdm only redraws on update(); a single LLM call never updates
+        while not done.wait(1.0):
+            bar.refresh()
+
+    threading.Thread(target=tick, daemon=True).start()
+    try:
         yield
         bar.update(1)
+    finally:
+        done.set()
+        bar.close()
 
 
 def normalize(raw: Any, qid: str) -> RawAnswer:
