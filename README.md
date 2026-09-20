@@ -62,7 +62,13 @@ df.hunch.where("probably likes cats")
 df.hunch.where("is a decision-maker at a company that sells to enterprises", columns=["title", "company"], threshold=0.7)
 ```
 
-`detail=True` returns all rows with `match` and `match_p` columns so you can draw your own line.
+`detail=True` returns all rows with `match` and `match_p` columns so you can draw your own line. Statements about evidence in the row filter well. Predictions about behavior cluster near 0.3 to 0.4 when the row says nothing either way, so rank those instead of thresholding them:
+
+```python
+cats  = df.hunch.where("probably likes cats", columns=["name", "age", "bio"], threshold=0.7)
+scary = df.hunch.where("might yell at a waiter for getting their order wrong",
+                       columns=["name", "age", "bio"], detail=True).nlargest(5, "match_p")
+```
 
 ### `df.hunch`
 
@@ -164,11 +170,12 @@ Big columns get a progress bar. Any call that needs 10 or more requests shows on
 
 ## Examples
 
-Each is a single file with the data inline, so you can run it as-is. The first three need only `TYPESAFE_API_KEY`. The last two also draft with an LLM, so they want an OpenRouter key.
+Each is a single file with the data inline, so you can run it as-is. Three need only `TYPESAFE_API_KEY`. The ones that `generate` also want an OpenRouter key.
 
 | File | Shows |
 | --- | --- |
 | [`find_angry_reviews.py`](examples/find_angry_reviews.py) | `check` over a column as a boolean mask, ranking by probability, several checks in one request |
+| [`dating_profiles.py`](examples/dating_profiles.py) | `generate` typed profiles, `ask` two questions per row, `score` against a described person, `pick` a date, then semantic `where` for cat people and waiter-yellers |
 | [`classify_job_titles.py`](examples/classify_job_titles.py) | `classify` with Enums, `detail=True`, and `.on()` routing sure / split / unsure with a rematch |
 | [`triage_tickets.py`](examples/triage_tickets.py) | `score` on two scales in one request, multi-label `classify`, paging policy kept in code |
 | [`introduce_hunch.py`](examples/introduce_hunch.py) | `generate` 20 tweets with an LLM, `rank` them on weighted dimensions, `pick` the winner |
