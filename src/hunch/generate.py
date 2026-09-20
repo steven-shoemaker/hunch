@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import to_jsonable_python
 
+from hunch import engine
 from hunch.client import Client, resolve
 from hunch.exceptions import HunchError
 from hunch.llm import LanguageModel
@@ -30,7 +31,8 @@ def generate(
     """
     if n < 1:
         raise HunchError("generate() needs n >= 1.")
-    model = llm or resolve(client).llm
+    jev = resolve(client)
+    model = llm or jev.llm
     if model is None:
         raise HunchError("generate() needs a language model: pass llm= here or on configure().")
     adapter: TypeAdapter[Any] = TypeAdapter(list[target] if n > 1 else target)  # type: ignore[valid-type]
@@ -47,7 +49,9 @@ def generate(
 
     last_error = ""
     for attempt in range(2):
-        text = model.complete(system=system, user=user if not last_error else f"{user}\n\nYour previous reply was invalid: {last_error}\nReply again with only valid JSON.")
+        prompt = user if not last_error else f"{user}\n\nYour previous reply was invalid: {last_error}\nReply again with only valid JSON."
+        with engine.working(jev, f"generate {n} {getattr(target, '__name__', target)}"):
+            text = model.complete(system=system, user=prompt)
         try:
             value = _parse(adapter, text, target, n)
         except (ValidationError, ValueError) as error:

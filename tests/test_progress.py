@@ -33,3 +33,22 @@ def test_auto_threshold_and_off() -> None:
     off = Client(client=FakeJev(handler), progress=False)
     it = iter([1])
     assert engine.progress(off, 100, "x")(it) is it
+
+
+def test_generate_shows_working_indicator(monkeypatch) -> None:
+    from contextlib import contextmanager
+
+    from hunch import generate
+    from tests.fakes import FakeLLM
+
+    seen: list[str] = []
+
+    @contextmanager
+    def fake_working(client, label):
+        seen.append(label)
+        yield
+
+    monkeypatch.setattr(engine, "working", fake_working)
+    jev = Client(client=FakeJev(handler), llm=FakeLLM('["a", "b"]'))
+    assert generate(str, n=2, client=jev) == ["a", "b"]
+    assert seen == ["generate 2 str"]

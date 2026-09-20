@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Any
 
 from pydantic_core import to_jsonable_python
@@ -103,6 +104,31 @@ def progress(client: Client, total: int, label: str) -> Any:
         bar_format="{desc:>10} {bar:24} {n_fmt}/{total_fmt} req {rate_fmt} {remaining}",
         colour="#e6b422",
     )
+
+
+@contextmanager
+def working(client: Client, label: str) -> Iterator[None]:
+    """Show an elapsed-time line while one long call runs (generate). No-op when progress is off."""
+    if client.progress is False:
+        yield
+        return
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        if client.progress is True:
+            raise HunchError("progress=True needs tqdm: pip install tqdm") from None
+        yield
+        return
+    with tqdm(
+        total=1,
+        desc=label,
+        leave=False,
+        dynamic_ncols=True,
+        bar_format="{desc:>10} {elapsed}",
+        colour="#e6b422",
+    ) as bar:
+        yield
+        bar.update(1)
 
 
 def normalize(raw: Any, qid: str) -> RawAnswer:
