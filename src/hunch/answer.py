@@ -1,8 +1,10 @@
+"""Rich results. Every verb returns these when detail=True."""
+
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import TypeVar, Union
+from typing import Any, TypeVar, Union
 
 from hunch.shapes import Shape
 
@@ -14,49 +16,84 @@ def _take(branch: Branch[T]) -> T:
     return branch() if callable(branch) else branch
 
 
-@dataclass(frozen=True)
-class Answer:
-    """A resolved Choice: one label from a closed set, plus its shape."""
-
-    top: str
-    probabilities: Mapping[str, float]
-    confidence: float
+class _Shaped:
     shape: Shape
+
+    def on(self, *, sure: Branch[T], split: Branch[T], unsure: Branch[T]) -> T:
+        """Branch on the distribution shape. Callables are only invoked on their branch."""
+        if self.shape == "sure":
+            return _take(sure)
+        if self.shape == "split":
+            return _take(split)
+        return _take(unsure)
+
+
+@dataclass(frozen=True)
+class Answer(_Shaped):
+    """A resolved Choice: one label from a closed set, plus the whole distribution."""
+
+    label: Any
+    """The chosen label. An Enum member when labels were an Enum, else a str."""
+    probabilities: Mapping[str, float]
+    """P(label) for every option, keyed by the option's string form."""
+    confidence: float
+    """How peaked the distribution is (0–1). Not whether the label is true."""
+    shape: Shape
+
+    @property
+    def top(self) -> str:
+        return _key(self.label)
 
     @property
     def p(self) -> float:
         return float(self.probabilities[self.top])
 
     @property
-    def top2(self) -> list[str]:
-        return sorted(self.probabilities, key=lambda k: self.probabilities[k], reverse=True)[:2]
+    def ranked(self) -> list[tuple[str, float]]:
+        return sorted(self.probabilities.items(), key=lambda kv: kv[1], reverse=True)
 
-    def on(self, *, sure: Branch[T], torn: Branch[T], lost: Branch[T]) -> T:
-        if self.shape == "sure":
-            return _take(sure)
-        if self.shape == "torn":
-            return _take(torn)
-        if self.shape == "lost":
-            return _take(lost)
-        unreachable: Shape = self.shape
-        raise ValueError(f"Unknown shape {unreachable!r}.")
+    @property
+    def top2(self) -> list[str]:
+        return [label for label, _ in self.ranked[:2]]
+
+
+@dataclass(frozen=True)
+class MultiAnswer:
+    """A resolved multi-label classification: one Noul per label, thresholded."""
+
+    labels: list[Any]
+    """Labels whose P(applies) reached the threshold, highest first."""
+    probabilities: Mapping[str, float]
+    """P(applies) for every label."""
+    threshold: float
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self.labels)
+
+    def __len__(self) -> int:
+        return len(self.labels)
+
+    def __contains__(self, item: Any) -> bool:
+        return item in self.labels
 
 
 @dataclass(frozen=True)
 class Feeling:
-    """A resolved Noul. Truthy when P(yes) is at least 0.5."""
+    """A resolved Noul. Truthy when P(yes) reaches the threshold."""
 
     p: float
+    threshold: float = 0.5
 
     def __bool__(self) -> bool:
-        return self.p >= 0.5
+        return self.p >= self.threshold
 
 
 @dataclass(frozen=True)
-class Rating:
-    """A resolved Score: position on ordered levels, plus its shape."""
+class Rating(_Shaped):
+    """A resolved Score: a position along ordered levels, plus the distribution."""
 
     score: float
+    """Probability-weighted position, 0 .. len(levels)-1. Can land between levels."""
     confidence: float
     legend: Mapping[int, str]
     probabilities: Mapping[int, float]
@@ -68,15 +105,37 @@ class Rating:
         return self.legend[nearest]
 
     @property
-    def top(self) -> str:
-        return self.level
+    def normalized(self) -> float:
+        """Score rescaled to 0–1 so ratings with different level counts compare."""
+        top = max(self.legend) if self.legend else 0
+        return self.score / top if top else 0.0
 
-    def on(self, *, sure: Branch[T], torn: Branch[T], lost: Branch[T]) -> T:
-        if self.shape == "sure":
-            return _take(sure)
-        if self.shape == "torn":
-            return _take(torn)
-        if self.shape == "lost":
-            return _take(lost)
-        unreachable: Shape = self.shape
-        raise ValueError(f"Unknown shape {unreachable!r}.")
+
+@dataclass(frozen=True)
+class Pick(_Shaped):
+    """A resolved pick(): the winning candidate and how the field ranked."""
+
+    winner: Any
+    ranked: list[tuple[Any, float]]
+    """(candidate, probability) pairs, best first."""
+    confidence: float
+    shape: Shape
+
+
+@dataclass(frozen=True)
+class Ranked:
+    """One row of rank(): the item, its weighted composite, and per-dimension ratings."""
+
+    item: Any
+    composite: float
+    """Weighted mean of normalized dimension scores, 0–1."""
+    ratings: Mapping[str, Rating]
+
+    def __iter__(self) -> Iterator[Any]:
+        yield self.item
+        yield self.composite
+
+
+def _key(label: Any) -> str:
+    value = getattr(label, "value", label)
+    return str(value)

@@ -9,11 +9,10 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
-
-from hunch import ask, connect, draft, openrouter, over, role
+import hunch
 
 SKIP_NAMES = {".DS_Store", ".localized", "$RECYCLE.BIN"}
+NO_PILES = {"review", "other", "misc", "unsorted"}
 
 
 def load_env(path: Path) -> None:
@@ -27,7 +26,7 @@ def load_env(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
-def list_downloads(root: Path) -> pd.DataFrame:
+def list_downloads(root: Path) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for path in root.iterdir():
         if path.name.startswith(".") or path.name in SKIP_NAMES:
@@ -43,30 +42,20 @@ def list_downloads(root: Path) -> pd.DataFrame:
                 "ext": "" if path.is_dir() else path.suffix.lower(),
                 "bytes": info.st_size,
                 "modified": datetime.fromtimestamp(info.st_mtime, tz=timezone.utc).isoformat(),
-                "path": str(path),
             }
         )
-    return pd.DataFrame(rows).sort_values("modified", ascending=False).reset_index(drop=True)
+    return sorted(rows, key=lambda row: str(row["modified"]), reverse=True)
 
 
 def unique_dest(folder: Path, name: str) -> Path:
     dest = folder / name
     if not dest.exists():
         return dest
-    stem = Path(name).stem
-    suffix = Path(name).suffix
+    stem, suffix = Path(name).stem, Path(name).suffix
     index = 1
-    while True:
-        candidate = folder / f"{stem} ({index}){suffix}"
-        if not candidate.exists():
-            return candidate
+    while (folder / f"{stem} ({index}){suffix}").exists():
         index += 1
-
-
-def move_item(source: Path, dest: Path) -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(dest))
-    return dest
+    return folder / f"{stem} ({index}){suffix}"
 
 
 def main() -> None:
@@ -76,142 +65,92 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--refresh-taxonomy", action="store_true")
-    parser.add_argument(
-        "--cache",
-        type=Path,
-        default=Path.home() / ".cache" / "hunch" / "downloads",
-    )
+    parser.add_argument("--cache", type=Path, default=Path.home() / ".cache" / "hunch" / "downloads")
     parser.add_argument("--env", type=Path, default=Path(__file__).resolve().parents[1] / ".env")
     args = parser.parse_args()
-
     load_env(args.env)
+
     items = list_downloads(args.root)
-    if items.empty:
+    if not items:
         raise SystemExit(f"No visible items in {args.root}")
-
-    listing = [
-        f"{row.kind}\t{row.ext}\t{row.name}"
-        for row in items.head(200).itertuples(index=False)
-    ]
-    jev = connect(llm=openrouter(model="z-ai/glm-5.3-flash"), cache=args.cache)
-    taxonomist = role(
-        "Propose 8–16 kebab-case folder names that cover this Downloads pile. "
-        "Group by meaning (work docs, personal paperwork, books, design assets, "
-        "installers, archives, media, project folders), not by file extension alone. "
-        "Include junk for disposable leftovers. Do not include review, other, or misc — "
-        "every item must have a real home. No duplicates.",
-        emit=list[str],
-    )
-
     print(f"Listed {len(items)} top-level items in {args.root}", flush=True)
-    saved = None if args.refresh_taxonomy else _read_taxonomy(args.cache)
-    if saved:
-        taxonomy = saved
-        print("Using saved taxonomy:", ", ".join(taxonomy), flush=True)
-    else:
-        print("Asking OpenRouter for a taxonomy…", flush=True)
-        with jev.session():
-            taxonomy = draft(listing, taxonomist).labels
-        taxonomy = [label for label in taxonomy if label not in {"review", "other", "misc", "unsorted"}]
+
+    jev = hunch.configure(llm=hunch.openrouter(), cache=args.cache, max_workers=args.workers)
+
+    taxonomy_file = args.cache / "taxonomy.json"
+    taxonomy = None if args.refresh_taxonomy else _read_taxonomy(taxonomy_file)
+    if taxonomy is None:
+        print("Asking the LLM for a taxonomy…", flush=True)
+        taxonomy = hunch.generate(
+            str,
+            n=12,
+            instructions=(
+                "Propose kebab-case folder names that cover this Downloads pile. Group by meaning "
+                "(work docs, personal paperwork, books, design assets, installers, archives, media, "
+                "project folders), not by extension alone. Include junk for disposable leftovers. "
+                "Never review, other, misc, or unsorted: every item must have a real home."
+            ),
+            context={"listing": [f"{r['kind']}\t{r['ext']}\t{r['name']}" for r in items[:200]]},
+        )
+        taxonomy = [label for label in dict.fromkeys(taxonomy) if label not in NO_PILES]
         if "junk" not in taxonomy:
             taxonomy.append("junk")
-        _write_taxonomy(args.cache, taxonomy)
-        print("Taxonomy:", ", ".join(taxonomy), flush=True)
+        args.cache.mkdir(parents=True, exist_ok=True)
+        taxonomy_file.write_text(json.dumps(taxonomy, indent=2) + "\n")
+    print("Taxonomy:", ", ".join(taxonomy), flush=True)
 
-    dest_names = set(taxonomy)
-    movable = items[~items["name"].isin(dest_names) | (items["kind"] != "dir")].copy()
-    sample = movable if args.limit <= 0 else movable.head(args.limit)
-    if sample.empty:
+    movable = [r for r in items if not (r["kind"] == "dir" and r["name"] in taxonomy)]
+    if args.limit > 0:
+        movable = movable[: args.limit]
+    if not movable:
         print("Nothing new to file. Destination folders were left alone.")
-        print(f"Jev usage: {jev.usage.calls} calls, {jev.usage.hits} cache hits.")
         return
-    lookup = {row["name"]: row for row in sample.to_dict(orient="records")}
-    print(f"Classifying {len(sample)} new items with Jev ({args.workers} workers)…", flush=True)
 
-    @over(sample, "name")
-    def classify(name):
-        row = lookup[str(name)]
-        state = {
-            "name": row["name"],
-            "kind": row["kind"],
-            "ext": row["ext"],
-            "bytes": row["bytes"],
-            "modified": row["modified"],
-        }
-        folder = ask(
-            state,
-            "Which folder should this Downloads item go in?",
-            among=taxonomy,
-            by=(
-                "Pick the best fitting folder even if the name is thin. "
-                "Camera-roll stills (IMG_, DSC_, screenshots) go in a photos or screenshots folder. "
-                "App disk images and installers go in installers. "
-                "Named project folders and their zips go in side-projects or dev-projects. "
-                "Use junk only for obvious leftovers or disposable exports. "
-                "Never pick a review, other, or unsorted pile."
-            ),
-        )
-        return {
-            "folder": folder.top,
-            "shape": folder.shape,
-            "confidence": round(folder.confidence, 3),
-            "p": round(folder.p, 3),
-        }
-
-    results = classify.run(
-        jev,
-        max_workers=args.workers,
-        on_item=lambda done, total, _value: print(f"  classified {done}/{total}", flush=True)
-        if done == total or done % 25 == 0
-        else None,
+    print(f"Classifying {len(movable)} items with Jev…", flush=True)
+    folders = hunch.classify(
+        movable,
+        taxonomy,
+        instructions=(
+            "Which folder should this Downloads item go in? Pick the best fit even if the name is thin. "
+            "Camera-roll stills (IMG_, DSC_, screenshots) go with photos or screenshots. Disk images and "
+            "installers go in installers. Named project folders and their zips go with projects. "
+            "Use junk only for obvious leftovers."
+        ),
+        detail=True,
     )
 
-    moved = 0
-    skipped = 0
-    for row in results.itertuples(index=False):
-        folder = getattr(row, "folder", None)
-        if not isinstance(folder, str) or not folder:
+    moved = skipped = 0
+    counts: dict[str, int] = {}
+    for row, answer in zip(movable, folders):
+        folder = answer.on(sure=answer.label, split=answer.label, unsure=None)
+        if folder is None:
             skipped += 1
+            print(f"?  {row['name']}  (unsure: {answer.top2})", flush=True)
             continue
-        source = Path(row.path)
-        if not source.exists():
-            skipped += 1
-            continue
-        dest_dir = args.root / folder
-        if source.resolve() == dest_dir.resolve():
-            skipped += 1
-            continue
-        dest = unique_dest(dest_dir, source.name)
+        counts[folder] = counts.get(folder, 0) + 1
+        source = args.root / str(row["name"])
+        dest = unique_dest(args.root / folder, source.name)
         print(f"{source.name} -> {folder}/{dest.name}", flush=True)
         if not args.dry_run:
-            move_item(source, dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(dest))
         moved += 1
 
     print()
-    print(results.groupby("folder").size().sort_values(ascending=False).to_string())
-    print()
-    action = "Would move" if args.dry_run else "Moved"
+    for folder, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+        print(f"{count:4d}  {folder}")
     used = jev.usage
-    print(f"{action} {moved} items. Skipped {skipped}.")
-    print(
-        f"Jev {used.model or 'jev'}: {used.calls} calls, {used.hits} cache hits, "
-        f"{used.input_tokens} in / {used.output_tokens} out tokens."
-    )
+    print(f"\n{'Would move' if args.dry_run else 'Moved'} {moved} items. Left {skipped} for review.")
+    print(f"Jev {used.model or 'jev'}: {used.calls} calls, {used.hits} cache hits, {used.input_tokens} in / {used.output_tokens} out tokens.")
 
 
-def _read_taxonomy(cache: Path) -> list[str] | None:
-    path = cache / "taxonomy.json"
+def _read_taxonomy(path: Path) -> list[str] | None:
     if not path.is_file():
         return None
     labels = json.loads(path.read_text())
     if not isinstance(labels, list) or not all(isinstance(item, str) for item in labels):
         return None
     return labels
-
-
-def _write_taxonomy(cache: Path, labels: list[str]) -> None:
-    cache.mkdir(parents=True, exist_ok=True)
-    (cache / "taxonomy.json").write_text(json.dumps(labels, indent=2) + "\n")
 
 
 if __name__ == "__main__":

@@ -1,14 +1,14 @@
 [project]
 name = "hunch-jev"
-version = "0.1.0"
-description = "Ask Jev over columns of data: closed-set questions, cached and joined back."
+version = "0.2.0"
+description = "Plain function verbs on Jev: classify, score, check, pick, rank, generate."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Steven Shoemaker" }]
 dependencies = [
-    "pandas>=2.0",
-    "typesafe-sdk>=0.5.7",
+    "typesafe-sdk>=0.7.0",
+    "pydantic>=2.0",
 ]
 
 [project.urls]
@@ -16,7 +16,7 @@ Homepage = "https://github.com/steven-shoemaker/hunch"
 Repository = "https://github.com/steven-shoemaker/hunch"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pandas>=2.0"]
 
 [build-system]
 requires = ["hatchling"]

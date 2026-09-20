@@ -1,73 +1,75 @@
+"""A Jev connection plus cache, usage meter, shape policy, and optional LLM."""
+
 from __future__ import annotations
 
 import os
-import threading
 from pathlib import Path
 from typing import Any
 
-from typesafe_sdk import TypeSafeClient
-
 from hunch.cache import Cache
-from hunch.session import activate
 from hunch.shapes import ShapePolicy
 from hunch.usage import Meter, Usage
 
 
-class Hunch:
-    """A Jev connection plus a cache shared across @over runs."""
-
+class Client:
     def __init__(
         self,
-        client: Any,
+        api_key: str | None = None,
         *,
-        policy: ShapePolicy | None = None,
+        model: str | None = None,
+        client: Any | None = None,
         llm: Any | None = None,
-        cache: Cache | None = None,
+        cache: str | Path | None = None,
+        policy: ShapePolicy | None = None,
+        max_workers: int = 8,
     ) -> None:
-        self.client = client
-        self.policy = policy or ShapePolicy()
+        """Open a Jev client. Reads TYPESAFE_API_KEY and TYPESAFE_DEFAULT_MODEL when omitted.
+
+        client= injects any object with a system_one(state=, questions=) method (tests, fakes).
+        llm= is a LanguageModel for generate(). cache= persists answers on disk.
+        """
+        if client is None:
+            from typesafe_sdk import TypeSafeClient
+
+            kwargs: dict[str, Any] = {}
+            key = api_key if api_key is not None else os.environ.get("TYPESAFE_API_KEY")
+            if key:
+                kwargs["api_key"] = key
+            chosen = model or os.environ.get("TYPESAFE_DEFAULT_MODEL")
+            if chosen:
+                kwargs["model"] = chosen
+            client = TypeSafeClient(**kwargs)
+        self.jev = client
         self.llm = llm
-        self.cache = cache or Cache()
+        self.cache = Cache(cache)
+        self.policy = policy or ShapePolicy()
+        self.max_workers = max(1, max_workers)
         self.meter = Meter()
-        self._lock = threading.Lock()
-
-    def session(self):
-        return activate(
-            self.client,
-            self.policy,
-            self.cache,
-            self._lock,
-            llm=self.llm,
-            meter=self.meter,
-        )
-
-    def clear_cache(self) -> None:
-        with self._lock:
-            self.cache.clear()
 
     @property
     def usage(self) -> Usage:
         return self.meter.snapshot()
 
+    def clear_cache(self) -> None:
+        self.cache.clear()
 
-def connect(
-    api_key: str | None = None,
-    *,
-    client: Any | None = None,
-    model: str | None = None,
-    policy: ShapePolicy | None = None,
-    llm: Any | None = None,
-    cache: str | Path | None = None,
-) -> Hunch:
-    """Open a Jev client. Reads TYPESAFE_API_KEY when api_key is omitted."""
-    store = Cache(Path(cache).expanduser() if cache is not None else None)
-    if client is not None:
-        return Hunch(client, policy=policy, llm=llm, cache=store)
-    key = api_key if api_key is not None else os.environ.get("TYPESAFE_API_KEY")
-    kwargs: dict[str, Any] = {}
-    if key:
-        kwargs["api_key"] = key
-    chosen = model or os.environ.get("TYPESAFE_DEFAULT_MODEL")
-    if chosen:
-        kwargs["model"] = chosen
-    return Hunch(TypeSafeClient(**kwargs), policy=policy, llm=llm, cache=store)
+
+_default: Client | None = None
+
+
+def configure(*args: Any, **kwargs: Any) -> Client:
+    """Build the module-level default client. Same arguments as Client()."""
+    global _default
+    _default = Client(*args, **kwargs)
+    return _default
+
+
+def default() -> Client:
+    global _default
+    if _default is None:
+        _default = Client()
+    return _default
+
+
+def resolve(client: Client | None) -> Client:
+    return client if client is not None else default()
