@@ -36,6 +36,51 @@ pip install hunch-jev
 
 Python 3.10+. Set `TYPESAFE_API_KEY` in your environment, or call `hunch.configure(api_key=...)` at startup. Keys don't belong in source files.
 
+## Where it fits
+
+Anywhere a person is reading rows and making a call. A few that come up:
+
+**Engineering: ticket triage, and a verifier step for a code review agent.**
+
+```python
+tickets = tickets.join(tickets.hunch.ask({
+    "kind":     Classify(["bug", "feature request", "question"]),
+    "severity": Rate(["cosmetic", "degraded, workaround exists", "blocked", "outage"]),
+}))
+
+# Keep only the review-bot comments Jev agrees describe a real defect in the diff
+real = comments.hunch.where("describes an actual defect present in the diff",
+                            columns=["comment"], context={"diff": diff}, threshold=0.7)
+```
+
+**GTM: prospecting.**
+
+```python
+buyers = prospects.hunch.where("is an economic buyer for a people-analytics tool",
+                               columns=["title", "company", "headcount"])
+prospects["seniority"] = prospects["title"].hunch.classify(
+    ["IC", "Manager", "Director", "Executive"], split="rematch", unsure="review")
+```
+
+**SEO: intent and thin content, then a title tag Jev picks from LLM drafts.**
+
+```python
+pages = pages.join(pages.hunch.ask({
+    "intent": Classify(["informational", "commercial", "transactional", "navigational"]),
+    "thin":   Check("the page is thin content that adds nothing over the top results for its query"),
+}))
+titles = hunch.generate(str, n=10, instructions="title tags for this page", context=page)
+best   = hunch.pick(titles, "most likely to earn the click for the target query", context=page)
+```
+
+**Finance: anomalies and categorization.**
+
+```python
+suspect = txns.hunch.where("looks like a duplicate or erroneous charge",
+                           columns=["merchant", "amount", "date", "memo"])
+txns["account"] = txns[["merchant", "memo"]].hunch.classify(GLAccount)   # your Enum of GL accounts
+```
+
 ## Verbs
 
 | Verb | Jev primitive | Returns |
