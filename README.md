@@ -250,10 +250,6 @@ Single files you can run as-is. The first three need only `TYPESAFE_API_KEY`, an
 | [`introduce_hunch.py`](examples/introduce_hunch.py) | `generate` 20 tweets, `rank`, `pick`, then `refine` |
 | [`organize_downloads.py`](examples/organize_downloads.py) | an LLM proposes folders, `classify` files them, the script moves them |
 
-## What this is not
-
-Jev never invents labels. Whatever you pass as `labels` is the whole set of allowed answers, and that constraint is the point. LLMs only propose. They have no tools and take no actions. If you want open-ended writing or a multi-step agent, this is the wrong library, on purpose.
-
 [CHANGELOG.md](CHANGELOG.md) lists what changed in each version.
 
 ## License
