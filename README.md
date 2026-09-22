@@ -16,6 +16,8 @@ totals = invoices["body"].hunch.extract({"total": "money", "due": "date"})
 pip install hunch-jev
 ```
 
+Also available [for TypeScript](https://github.com/steven-shoemaker/hunch-js), with the same verbs over arrays.
+
 Using a coding agent? Give it the hunch skill so it uses these verbs instead of writing prompt-and-parse code:
 
 ```bash
