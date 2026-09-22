@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0
+
+- `route(answers, rules, default=)` turns answers into outcomes with ordered rules: minimum probabilities, labels, `(label, p)` pairs, label lists, shapes, or functions. Sends no requests; works on `ask` / `classify` / `check` / `score` output and on joined DataFrames. Also `df.hunch.route`.
+- `configure(gateway="openrouter")` and `configure(gateway="vercel")` reach Jev through OpenRouter's decisions endpoint or Vercel AI Gateway, with retries.
+- README: removed the "What this is not" section.
+
 ## 0.9.0
 
 - New verb `extract(data, {field: finder})`: code finds candidate values (built-in `email`, `url`, `money`, `number`, `percent`, `phone`, `date`, or any regex or function), Jev picks which is the answer. Values are always copied from the text; unstated fields are `None`.

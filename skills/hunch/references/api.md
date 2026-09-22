@@ -153,6 +153,30 @@ records, checking answers against references, or scoring a query against candida
     hunch.score(hunch.pairs(crm, vendors), ["different", "related", "same company"],
                 instructions="Are a and b the same company?")
 
+## route
+
+```python
+hunch.route(answers: Any, rules: Mapping[str, Mapping[str, Any]], *, default: Any = None) -> Any
+```
+
+Pick an outcome for each row: the first rule whose conditions all hold, else default.
+
+answers: what ask(), classify(), check(), or score() returned, ideally with detail=True
+so probabilities are available; a DataFrame joined from those works too. rules maps an
+outcome to its conditions, checked in order:
+
+    hunch.route(answers, {
+        "page":    {"urgent": 0.8},                   # P(yes) (or P of the label, or the score) >= 0.8
+        "billing": {"topic": ("billing", 0.7)},       # label is billing with P >= 0.7
+        "refunds": {"topic": ["refund", "chargeback"]},  # label is one of these
+        "review":  {"topic.shape": "unsure"},         # the answer's shape
+        "vip":     {"tier": "enterprise", "angry": True},  # all conditions must hold
+    }, default="triage")
+
+Names ending in .p, .shape, .level, or .score read that part of the answer. A condition
+may also be a function of the answer. A missing or skipped answer fails its condition.
+Returns one outcome, a list, or a Series on the same index.
+
 ## generate
 
 ```python

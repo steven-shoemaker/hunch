@@ -9,6 +9,7 @@ from hunch.evaluate import Evaluation, Threshold, evaluate, tune_threshold
 from hunch.exceptions import HunchError
 from hunch.extract import PATTERNS, extract, extract_async
 from hunch.generate import generate, generate_async
+from hunch.route import route
 from hunch.llm import LanguageModel, OpenAICompat, anthropic, azure, cerebras, ollama, openai, openrouter
 from hunch.shapes import Shape, ShapePolicy
 from hunch.usage import Usage
@@ -92,6 +93,7 @@ __all__ = [
     "rank_async",
     "refine",
     "refine_async",
+    "route",
     "score",
     "score_async",
     "tune_threshold",
@@ -101,4 +103,4 @@ __all__ = [
     "where_async",
 ]
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"

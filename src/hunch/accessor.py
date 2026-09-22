@@ -48,6 +48,11 @@ class HunchAccessor:
 
         return extract(self._obj, fields, **kw)
 
+    def route(self, rules: Any, **kw: Any) -> Any:
+        from hunch.route import route
+
+        return route(self._obj, rules, **kw)
+
     def pick(self, instructions: str, **kw: Any) -> Any:
         return verbs.pick(self._obj, instructions, **kw)
 

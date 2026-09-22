@@ -1,6 +1,6 @@
 [project]
 name = "hunch-jev"
-version = "0.9.0"
+version = "0.10.0"
 description = "Jev as plain Python functions over lists and DataFrames, with LLMs that propose and Jev that decides."
 readme = "README.md"
 requires-python = ">=3.10"

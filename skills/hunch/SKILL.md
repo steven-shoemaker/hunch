@@ -27,6 +27,7 @@ hunch.configure(api_key=..., llm=hunch.anthropic(), cache="~/.cache/hunch")  # w
 LLM adapters: `hunch.anthropic()`, `hunch.openai()`, `hunch.azure(deployment=...)`,
 `hunch.openrouter()`, `hunch.ollama("model")`, or any function `(system, user) -> str`.
 Only `generate`, `discover`, `refine`, and escalation need an LLM. Never hardcode keys.
+To reach Jev through OpenRouter or Vercel AI Gateway: `hunch.configure(gateway="openrouter" | "vercel")`.
 
 ## Pick the verb
 
@@ -45,6 +46,7 @@ Only `generate`, `discover`, `refine`, and escalation need an LLM. Never hardcod
 | Order candidates on weighted criteria | `rank(candidates, {dim: question}, levels, weights=, query=)` | Score per dim |
 | Categories unknown | `discover(data, n)` then `classify(data, result)` | LLM proposes |
 | Draft text that must meet rules | `refine(text, checks)` | LLM writes, Noul checks |
+| Turn answers into actions (queues, alerts) | `route(answers, {"page": {"urgent": 0.8}, "billing": {"topic": ("billing", 0.7)}}, default=...)` | none (reads answers) |
 | Is an LLM/agent claim supported? | `verify(claims, source)` returns supported / contradicted / not mentioned / misquoted | Choice |
 | Make fake or seed data | `generate(type, n, instructions=)` | LLM |
 | How accurate is it on my data? | `evaluate(pred, truth)`, `tune_threshold(p, truth, precision=)` | none |

@@ -30,6 +30,7 @@ class Client:
         max_rps: float | None = None,
         errors: str = "raise",
         progress: bool | str = "auto",
+        gateway: str = "typesafe",
     ) -> None:
         """Open a Jev client. Reads TYPESAFE_API_KEY and TYPESAFE_DEFAULT_MODEL when omitted.
 
@@ -39,6 +40,8 @@ class Client:
         max_rps= caps requests per second across both. errors="skip" turns a failed request
         into None for its rows (with a warning) instead of raising.
         progress= shows a progress bar per verb call: True, False, or "auto" (10+ requests).
+        gateway= reaches Jev through "openrouter" (OPENROUTER_API_KEY) or "vercel"
+        (AI_GATEWAY_API_KEY) instead of TypeSafe; api_key= and model= apply to the gateway.
         """
         if errors not in ("raise", "skip"):
             raise HunchError('errors= must be "raise" or "skip".')
@@ -51,6 +54,10 @@ class Client:
         chosen = model or os.environ.get("TYPESAFE_DEFAULT_MODEL")
         if chosen:
             self._sdk["model"] = chosen
+        if client is None and gateway != "typesafe":
+            from hunch.gateway import make
+
+            client = make(gateway, api_key, model)
         self.injected = client is not None
         if client is None:
             from typesafe_sdk import TypeSafeClient
