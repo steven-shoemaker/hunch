@@ -1,0 +1,9 @@
+{
+  "name": "hunch",
+  "version": "0.8.0",
+  "description": "Agent skill for hunch: Jev judgments as Python functions over lists and DataFrames, with LLMs that propose.",
+  "author": { "name": "Steven Shoemaker" },
+  "homepage": "https://github.com/steven-shoemaker/hunch",
+  "repository": "https://github.com/steven-shoemaker/hunch",
+  "license": "MIT"
+}

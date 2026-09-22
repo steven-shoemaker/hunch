@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Agent skill: `npx skills add steven-shoemaker/hunch --skill hunch`, or the Claude Code plugin `hunch@hunch`.
+- `hunch.verify` exposes its real signature and docstring.
+
 ## 0.8.0
 
 - **LLM + Jev verbs.** The LLM proposes, Jev decides or checks:

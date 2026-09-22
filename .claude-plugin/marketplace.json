@@ -1,0 +1,12 @@
+{
+  "name": "hunch",
+  "description": "Agent skill for the hunch Python library.",
+  "owner": { "name": "Steven Shoemaker" },
+  "plugins": [
+    {
+      "name": "hunch",
+      "description": "Use hunch (pip install hunch-jev) to label, score, filter, rank, and verify data with Jev.",
+      "source": "./"
+    }
+  ]
+}

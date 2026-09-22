@@ -3,6 +3,7 @@
 from hunch.answer import Answer, Feeling, MultiAnswer, Pick, Ranked, Rating
 from hunch.client import Client, configure, default
 from hunch.combine import Refined, discover, discover_async, refine, refine_async
+from hunch.combine import verify as verify
 from hunch.engine import Plan, dry_run
 from hunch.evaluate import Evaluation, Threshold, evaluate, tune_threshold
 from hunch.exceptions import HunchError
@@ -26,7 +27,6 @@ from hunch.verbs import (
     rank_async,
     score,
     score_async,
-    verify,
     verify_async,
     where,
     where_async,

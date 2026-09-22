@@ -134,7 +134,12 @@ def merge_context(base: Any, extra: Any) -> Any:
 # ----------------------------------------------------------------------------- ask
 
 
-KEEP: Any = object()
+class _Keep:
+    def __repr__(self) -> str:
+        return "KEEP"
+
+
+KEEP: Any = _Keep()
 """Default for split= / unsure=: keep the first answer."""
 
 

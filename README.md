@@ -16,6 +16,13 @@ That's three lines. Duplicates are asked once, requests run in parallel, and eve
 
 `pip install hunch-jev`
 
+**Using a coding agent?** Give it the hunch skill so it reaches for these verbs instead of writing prompt-and-parse code:
+
+```bash
+npx skills add steven-shoemaker/hunch --skill hunch        # Cursor, Codex, Claude Code, and other agents
+claude plugin marketplace add steven-shoemaker/hunch && claude plugin install hunch@hunch   # Claude Code plugin
+```
+
 ## Why this exists
 
 [Jev](https://docs.typesafe.ai) is TypeSafe's System One model: a classifier with frontier-level intelligence that needs no fine-tuning. You give it some state and a typed question, and it answers with a label, a score on your rubric, or a yes/no probability. It doesn't write paragraphs. That makes it the right tool for the enormous number of jobs where you'd otherwise prompt an LLM and hope the answer parses.
