@@ -55,6 +55,27 @@ df.hunch.where("is an economic buyer for a product like ours", columns=["title",
 
 `where` keeps the rows a statement holds for, strongest match first, and returns them whole. `columns=` limits what Jev reads.
 
+When a hard yes or no is the wrong answer, give `check` a band. Rows in the middle come back `None`, so they can go to a person instead of being forced to a side:
+
+```python
+df["cancel"] = df["review"].hunch.check("the customer will cancel", uncertain=(0.3, 0.7))
+# True, None, False
+```
+
+### Pull values out of text
+
+```python
+hunch.extract(invoice, {
+    "total":         ("money", "the amount due, not a subtotal or tax line"),
+    "due_date":      "date",
+    "billing_email": ("email", "where to send payment questions"),
+    "po_number":     r"PO-\d+",
+})
+# {'total': '$1,240.00', 'due_date': 'October 1, 2026', 'billing_email': 'ap@northwind.com', 'po_number': None}
+```
+
+Code finds every candidate (every dollar amount, every date, every email), and Jev picks which one is the answer, seeing the words around each. The value is always copied from the text, never written by a model, and a field the text doesn't state comes back `None`. That's the run above: the total, not the subtotal, and the billing address, not the no-reply one. Built-in finders cover `email`, `url`, `money`, `number`, `percent`, `phone`, and `date`; anything else is a regex or a function.
+
 ### Ask five things at once
 
 ```python
@@ -80,6 +101,19 @@ seniority = df["title"].hunch.classify(["IC", "Manager", "Director", "Executive"
 ```
 
 `split="rematch"` re-asks between just the top two, and only for the rows that were split. `unsure="review"` flags the rest for a person.
+
+Taxonomies work too. Wrap the tree in `hunch.Tree`, and Jev walks it level by level, keeping the best few paths so an early wrong turn doesn't sink the answer:
+
+```python
+catalog = hunch.Tree({
+    "Electronics": {"Phones": None, "Computers": {"Laptops": None, "Tablets": None}},
+    "Home": {"Kitchen": None, "Furniture": None},
+})
+products["category"] = products["title"].hunch.classify(catalog)
+# 'Electronics > Computers > Laptops', 'Home > Kitchen', ...
+```
+
+With a flat label list, `backoff={"Laptops": "Computers", "Tablets": "Computers"}` answers "Computers" when Jev can't tell the children apart but is sure of the family.
 
 ### Hand the hard ones to an LLM
 
@@ -115,12 +149,21 @@ The LLM rewrites, and Jev checks every draft against your rules. Only the drafts
 ### Catch an agent making things up
 
 ```python
-claims = ["skips None values", "adds a cache", "renames the function"]
+claims = ["skips None values", "adds a cache", "renames the function", 'the diff says "filter out empty strings"']
 hunch.verify(claims, diff)
-# [True, False, False]
+# ['supported', 'contradicted', 'not mentioned', 'misquoted']
 ```
 
-`verify` checks whether each claim is supported by a source: one document for all claims, or one per row. Use it as the last step of anything an LLM or agent produced, like review-bot comments, extracted fields, or summaries.
+`verify` checks each claim against a source: one document for all claims, or one per row. It tells a claim the source contradicts apart from one it simply doesn't mention. Anything the claim puts in quotes must appear in the source word for word, or it's `misquoted`, which catches fabricated quotes without a request. Use it as the last step of anything an LLM or agent produced: `good = comments[hunch.verify(comments["text"], diff) == "supported"]`.
+
+### Compare two things
+
+```python
+same = hunch.score(hunch.pairs(crm, vendors), ["different companies", "related companies", "the same company"],
+                   instructions="Are a and b the same company?")
+```
+
+`hunch.pairs(a, b)` lines up two lists, Series, or DataFrames row by row, so any verb can compare them: deduplicating records, grading answers against references, matching leads to accounts. To rank candidates against one query instead, pass it to `rank(..., query=...)`.
 
 ### Generate, rank, pick
 
@@ -132,6 +175,8 @@ winner = hunch.pick([row.item for row in ranked[:5]], "most likely to make a dev
 ```
 
 `generate` makes typed data: `str`, dataclasses, pydantic models, anything pydantic validates. `rank` scores every candidate on weighted dimensions, and `pick` puts the finalists head to head. Weights live in your code, so re-ranking costs nothing.
+
+A head-to-head always crowns someone, even when every candidate is bad. `pick(..., none=True)` also asks, in the same request, whether anything actually fits, and returns `None` when nothing does.
 
 ### Measure before you trust
 
@@ -167,7 +212,7 @@ tickets = tickets.join(tickets.hunch.ask({
     "kind":     Classify(["bug", "feature request", "question"]),
     "severity": Rate(["cosmetic", "degraded, workaround exists", "blocked", "outage"]),
 }))
-real = bot_comments[hunch.verify(bot_comments["comment"], diff)]   # drop comments the diff doesn't support
+real = bot_comments[hunch.verify(bot_comments["comment"], diff) == "supported"]   # drop what the diff doesn't back up
 ```
 
 **SEO: intent, thin pages, and a title tag Jev picks from LLM drafts.**
@@ -180,9 +225,10 @@ pages = pages.join(pages.hunch.ask({
 best = hunch.pick(hunch.generate(str, n=10, instructions="title tags", context=page), "most likely to earn the click")
 ```
 
-**Finance: anomalies and categorization.**
+**Finance: invoices, anomalies, and categorization.**
 
 ```python
+invoices = invoices.join(invoices["body"].hunch.extract({"total": ("money", "the amount due"), "due": "date"}))
 suspect = txns.hunch.where("looks like a duplicate or erroneous charge", columns=["merchant", "amount", "date", "memo"])
 txns["account"] = txns.hunch.classify(GLAccount, columns=["merchant", "memo"])   # your Enum of GL accounts
 ```
@@ -220,17 +266,19 @@ hunch.configure(api_key=..., llm=hunch.anthropic(), cache="~/.cache/hunch",
 
 | Verb | What it does | Returns |
 | --- | --- | --- |
-| `classify(data, labels, multi_label=False, split=, unsure=)` | Pick one label (or several) | label, Enum member, or list |
+| `classify(data, labels, multi_label=False, split=, unsure=, backoff=)` | Pick one label (or several); labels may be a `Tree` | label, Enum member, list, or "A > B > C" |
 | `score(data, levels, instructions=)` | Place on an ordered scale, 2 to 10 levels | float from 0 to n-1, or `{dim: float}` |
-| `check(data, statement, criteria=, threshold=0.5)` | Yes or no | bool, or `{name: bool}` |
+| `check(data, statement, criteria=, threshold=0.5, uncertain=)` | Yes or no, or maybe | bool (None for maybe), or `{name: bool}` |
 | `where(data, statement, threshold=0.5)` | Keep rows the statement holds for | the matching rows, strongest first |
+| `extract(data, {field: finder})` | Pull values out of text; Jev picks among candidates | dict per item, or a DataFrame |
 | `ask(data, {name: Classify \| Rate \| Check})` | Several questions, one request per row | dict per item, or a DataFrame |
-| `pick(candidates, instructions)` | Choose the best candidate | the winner, or its index label |
-| `rank(candidates, dimensions, levels, weights=)` | Weighted multi-dimension ranking | `Ranked` rows, or a sorted DataFrame |
+| `pick(candidates, instructions, none=False)` | Choose the best candidate, or none | the winner, its index label, or None |
+| `rank(candidates, dimensions, levels, weights=, query=)` | Weighted multi-dimension ranking | `Ranked` rows, or a sorted DataFrame |
+| `pairs(a, b)` | Line up two inputs for any verb | list or Series of `{a, b}` |
 | `generate(target, n=1, instructions=)` | LLM makes typed data | `target` or `list[target]` |
 | `discover(data, n=8, instructions=)` | LLM proposes categories | `{name: description}` for `classify` |
 | `refine(data, checks, rounds=3)` | LLM rewrites until Jev's checks pass | text in the same container |
-| `verify(claims, source)` | Is each claim supported by the source? | bool, or a Series named `supported` |
+| `verify(claims, source)` | Check claims against a source | supported / contradicted / not mentioned / misquoted |
 | `evaluate(predicted, truth)` | Accuracy, by shape, misses, confusion matrix | `Evaluation` |
 | `tune_threshold(p, truth, precision= \| recall=)` | Pick a cutoff from labeled rows | `Threshold` |
 

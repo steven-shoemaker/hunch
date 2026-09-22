@@ -285,54 +285,78 @@ def refine(
 
 # ----------------------------------------------------------------------------- verify
 
+VERDICTS = {
+    "supported": "the source states or directly implies every part of the claim",
+    "contradicted": "the source says something that conflicts with the claim",
+    "not mentioned": "the source doesn't address the claim, or supports only part of it",
+}
+
 
 def verify(
     claims: Any,
     source: Any,
     *,
-    threshold: float = 0.5,
     context: Any = None,
     detail: bool = False,
     client: Client | None = None,
 ) -> Any:
-    """Is each claim supported by its source? For checking what an LLM or agent produced.
+    """Check each claim against its source: "supported", "contradicted", "not mentioned",
+    or "misquoted".
 
-    source is one document for all claims, or a sequence / Series aligned with claims
-    (one source per claim). Returns bools in the caller's container (a Series named
-    `supported` for pandas); detail=True gives probabilities too. Only what the source
-    states counts: missing, contradicted, or partly supported claims are False.
+    source is one document for all claims, or a sequence / Series aligned with claims (one
+    per claim). Text the claim puts in quotes must appear in the source word for word, or
+    the claim is "misquoted" without asking Jev; that catches fabricated quotes. Returns
+    verdicts in the caller's container (a Series named `verdict` for pandas). To keep only
+    good rows: `verify(...) == "supported"`. detail=True gives probabilities and shape.
     """
-    from hunch.verbs import box, check, merge_context
+    from hunch.verbs import box, classify, pairs
 
     claim_box = box(claims)
-    statement = {
-        "question": "Is the claim fully supported by the source?",
-        "rules": "Judge only what the source states. Claims the source contradicts, doesn't mention, or only partly supports are not supported.",
-    }
-    criteria = {
-        "true": "the source states or directly implies every part of the claim",
-        "false": "the source contradicts the claim, doesn't mention it, or supports only part of it",
-    }
     aligned = not isinstance(source, (str, bytes, Mapping)) and hasattr(source, "__len__")
-    if aligned:
-        sources = list(source.tolist() if hasattr(source, "tolist") else source)
-        if len(sources) != len(claim_box.items):
-            raise HunchError(f"verify() got {len(claim_box.items)} claims and {len(sources)} sources.")
-        pairs = [{"claim": c, "source": s} for c, s in zip(claim_box.items, sources)]
-        if claim_box.pandas:
-            import pandas as pd
-
-            data: Any = pd.Series(pairs, index=claim_box.index)
-        else:
-            data = pairs if claim_box.kind != "single" else pairs[0]
-        ctx = context
-    else:
-        data = claims
-        ctx = merge_context(context, {"source": source})
-    out = check(data, json.dumps(statement), criteria=criteria, context=ctx, threshold=threshold, detail=detail, client=client)
+    sources = list(source.tolist() if hasattr(source, "tolist") else source) if aligned else None
+    if sources is not None and len(sources) != len(claim_box.items):
+        raise HunchError(f"verify() got {len(claim_box.items)} claims and {len(sources)} sources.")
+    per_row = sources if sources is not None else [source] * len(claim_box.items)
+    answers = classify(
+        pairs(claim_box.items, per_row, names=("claim", "source")),
+        VERDICTS,
+        instructions={
+            "question": "How does the source relate to the claim?",
+            "rules": "Judge only what the source states. Don't use outside knowledge.",
+        },
+        context=context,
+        detail=True,
+        client=client,
+    )
+    # ponytail: asks Jev even for misquoted rows, then overrides; skip them first if volume matters
+    out = [
+        Answer("misquoted", {"misquoted": 1.0}, 1.0, "sure", by="quote check") if _misquoted(c, src) else a
+        for c, src, a in zip(claim_box.items, per_row, answers)
+    ]
     if claim_box.pandas:
-        return out.rename("supported") if not detail else out.rename(columns={"check": "supported", "check_p": "supported_p"})
-    return out
+        import pandas as pd
+
+        if detail:
+            return pd.DataFrame(
+                [{"verdict": None if a is None else a.label, "verdict_p": None if a is None else a.p,
+                  "verdict_shape": None if a is None else a.shape} for a in out],
+                index=claim_box.index,
+            )
+        return pd.Series([None if a is None else a.label for a in out], index=claim_box.index, name="verdict")
+    values = out if detail else [None if a is None else a.label for a in out]
+    return values[0] if claim_box.kind == "single" else values
+
+
+def _misquoted(claim: Any, source: Any) -> bool:
+    """True when the claim quotes text (8+ characters in quotes) that isn't in the source."""
+    import re
+
+    quotes = [q for q in re.findall(r'["\u201c]([^"\u201d]{8,})["\u201d]', str(claim))]
+    if not quotes:
+        return False
+    norm = lambda t: " ".join(str(t).lower().split())  # noqa: E731
+    haystack = norm(source)
+    return any(norm(q) not in haystack for q in quotes)
 
 
 # ----------------------------------------------------------------------------- async twins

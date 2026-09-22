@@ -43,6 +43,11 @@ class HunchAccessor:
 
         return refine(self._obj, checks, **kw)
 
+    def extract(self, fields: Any, **kw: Any) -> Any:
+        from hunch.extract import extract
+
+        return extract(self._obj, fields, **kw)
+
     def pick(self, instructions: str, **kw: Any) -> Any:
         return verbs.pick(self._obj, instructions, **kw)
 

@@ -33,16 +33,19 @@ Only `generate`, `discover`, `refine`, and escalation need an LLM. Never hardcod
 | The task | Verb | Jev primitive |
 | --- | --- | --- |
 | Put each row in one of known categories | `classify(data, labels)` | Choice |
+| Categories form a hierarchy | `classify(data, hunch.Tree({...}))`, or `backoff={child: parent}` | Choice per level |
+| Pull a value out of text (total, date, email) | `extract(data, {field: "money"})` | Choice over found candidates |
 | Several labels can apply | `classify(data, labels, multi_label=True)` | one Noul per label |
 | Place on an ordered scale (severity, fit) | `score(data, levels)` | Score |
-| Yes/no about each row | `check(data, statement)` | Noul |
+| Yes/no about each row | `check(data, statement)`; `uncertain=(0.3, 0.7)` for a maybe band | Noul |
 | Keep only rows that match a description | `where(data, statement)` | Noul, filtered |
 | Several questions about the same rows | `ask(data, {name: Classify/Rate/Check})` | one request per row |
-| Best of N candidates | `pick(candidates, instructions)` | one Choice |
-| Order candidates on weighted criteria | `rank(candidates, {dim: question}, levels, weights=)` | Score per dim |
+| Best of N candidates | `pick(candidates, instructions, none=True)` | Choice + "anything fits?" Noul |
+| Compare two things row by row (dedupe, match) | any verb on `hunch.pairs(a, b)` | depends on verb |
+| Order candidates on weighted criteria | `rank(candidates, {dim: question}, levels, weights=, query=)` | Score per dim |
 | Categories unknown | `discover(data, n)` then `classify(data, result)` | LLM proposes |
 | Draft text that must meet rules | `refine(text, checks)` | LLM writes, Noul checks |
-| Is an LLM/agent claim supported? | `verify(claims, source)` | Noul |
+| Is an LLM/agent claim supported? | `verify(claims, source)` returns supported / contradicted / not mentioned / misquoted | Choice |
 | Make fake or seed data | `generate(type, n, instructions=)` | LLM |
 | How accurate is it on my data? | `evaluate(pred, truth)`, `tune_threshold(p, truth, precision=)` | none |
 
@@ -66,6 +69,18 @@ best = hunch.pick(drafts, "most likely to get a reply from a busy CFO")
   question that needs it (`Rate([...], "...", context={...})`), or it colors every answer.
 - `detail=True` returns probabilities. On pandas it spreads into columns:
   `label/label_p/label_shape`, `score/score_level`, `check/check_p`.
+
+## Values and comparisons
+
+```python
+hunch.extract(invoice_text, {"total": ("money", "the amount due, not a subtotal"), "due": "date"})
+same = hunch.score(hunch.pairs(crm, vendors), ["different", "related", "same company"],
+                   instructions="Are a and b the same company?")
+good = comments[hunch.verify(comments["text"], diff) == "supported"]
+```
+
+- `extract` never writes values: code finds candidates, Jev picks one or none. Prefer it over asking an LLM to "extract JSON".
+- `pick` always crowns a winner unless `none=True`; use it whenever "none of these" is a valid outcome.
 
 ## Handling uncertainty
 

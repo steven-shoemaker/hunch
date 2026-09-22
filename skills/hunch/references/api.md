@@ -5,10 +5,17 @@ Signatures and docstrings from the package. The Jev verbs have `_async` twins an
 ## classify
 
 ```python
-hunch.classify(data: Any, labels: Any, *, columns: Sequence[str] | None = None, multi_label: bool = False, instructions: str | None = None, context: Any = None, threshold: float = 0.5, split: Any = KEEP, unsure: Any = KEEP, detail: bool = False, client: Client | None = None) -> Any
+hunch.classify(data: Any, labels: Any, *, columns: Sequence[str] | None = None, multi_label: bool = False, instructions: str | None = None, context: Any = None, threshold: float = 0.5, split: Any = KEEP, unsure: Any = KEEP, backoff: Mapping[str, str] | None = None, beam: int = 3, detail: bool = False, client: Client | None = None) -> Any
 ```
 
 Assign data to one of the labels (or several with multi_label=True).
+
+labels may be a hunch.Tree({"Parent": {"Child": description or None}}). Jev walks it
+level by level with beam search, keeping the best `beam` paths, and returns the path
+as "Parent > Child > Leaf".
+
+backoff={child: parent} answers with the parent when Jev can't decide between
+children but is sure of the family ("Laptops" vs "Tablets" -> "Computers").
 
 labels: a sequence of strings, an Enum class, or a mapping label -> description.
 Returns the label (an Enum member when labels is an Enum). detail=True returns
@@ -36,10 +43,14 @@ is then a dict per item. detail=True returns Rating(s). columns= narrows a DataF
 ## check
 
 ```python
-hunch.check(data: Any, statement: str | Mapping[str, str], *, columns: Sequence[str] | None = None, criteria: Mapping[str, str | None] | None = None, context: Any = None, threshold: float = 0.5, detail: bool = False, client: Client | None = None) -> Any
+hunch.check(data: Any, statement: str | Mapping[str, str], *, columns: Sequence[str] | None = None, criteria: Mapping[str, str | None] | None = None, context: Any = None, threshold: float = 0.5, uncertain: tuple[float, float] | None = None, detail: bool = False, client: Client | None = None) -> Any
 ```
 
 Does the statement hold for the data? Returns bool (P(yes) >= threshold).
+
+uncertain=(0.3, 0.7) adds a "maybe": P(yes) at or above 0.7 is True, at or below 0.3
+is False, and in between is None, so borderline rows can go to review instead of
+being forced to a side. It replaces threshold.
 
 statement may be a mapping name -> statement to check several in one request.
 criteria={"true": ..., "false": ...} sharpens the boundary. detail=True returns Feeling(s).
@@ -56,6 +67,30 @@ Semantic filter: keep the rows (or items) for which the statement holds.
 Results come back sorted by how strongly they match. columns= limits what Jev
 reads from a DataFrame; the whole row is still returned. detail=True returns every
 row with `match` and `match_p` columns instead of filtering. Skipped requests don't match.
+
+## extract
+
+```python
+hunch.extract(data: Any, fields: Mapping[str, Any], *, columns: Sequence[str] | None = None, context: Any = None, detail: bool = False, client: Client | None = None) -> Any
+```
+
+Pull named values out of text. Returns None for a field the text doesn't state.
+
+fields maps a name to how to find its candidates: a built-in name ("email", "url",
+"money", "number", "percent", "phone", "date"), a regex, a compiled pattern, a function
+text -> list of strings, or a (finder, description) tuple when the name needs explaining:
+
+    hunch.extract(invoices["body"], {
+        "total": ("money", "the amount due, not a subtotal or tax line"),
+        "due_date": "date",
+        "billing_email": "email",
+    })
+
+Every candidate goes to Jev with the words around it, plus a "none" option, and all
+fields for a row go in one request. A row with no candidates for a field costs nothing
+for that field. One value returns a dict, a list returns a list of dicts, and a Series
+or DataFrame returns a DataFrame with one column per field (detail=True adds _p and
+_shape columns).
 
 ## ask
 
@@ -74,7 +109,7 @@ questions whose merged context differs go in separate requests.
 ## pick
 
 ```python
-hunch.pick(candidates: Any, instructions: str, *, columns: Sequence[str] | None = None, context: Any = None, detail: bool = False, client: Client | None = None) -> Any
+hunch.pick(candidates: Any, instructions: str, *, none: bool = False, none_threshold: float = 0.5, columns: Sequence[str] | None = None, context: Any = None, detail: bool = False, client: Client | None = None) -> Any
 ```
 
 Choose the single best candidate. Jev compares them head to head in one Choice.
@@ -83,18 +118,40 @@ A list returns the winning item. A Series or DataFrame returns the winner's inde
 label, so df.loc[winner] is the row; columns= limits what Jev reads. More than 255
 candidates run as a tournament. detail=True returns Pick with every candidate's probability.
 
+A Choice always crowns someone. none=True also asks, in the same request, whether any
+candidate actually satisfies the task, and returns None when P(fits) is below
+none_threshold.
+
 ## rank
 
 ```python
-hunch.rank(candidates: Any, dimensions: str | Mapping[str, str], levels: Sequence[str], *, columns: Sequence[str] | None = None, weights: Mapping[str, float] | None = None, context: Any = None, client: Client | None = None) -> Any
+hunch.rank(candidates: Any, dimensions: str | Mapping[str, str], levels: Sequence[str], *, columns: Sequence[str] | None = None, weights: Mapping[str, float] | None = None, query: Any = None, context: Any = None, client: Client | None = None) -> Any
 ```
 
 Score every candidate on each dimension, weight, and sort best first.
+
+query= is what the candidates are being ranked for (a search, a job description, a
+buyer profile); every candidate is scored against it, which makes rank a reranker.
 
 Composite = weighted mean of normalized (0–1) dimension scores. Weights default to 1.
 A list returns Ranked rows. A Series or DataFrame returns a DataFrame on the same
 index with `composite` and one column per dimension, sorted best first; columns=
 limits what Jev reads. Skipped requests get a NaN composite and sort last.
+
+## pairs
+
+```python
+hunch.pairs(a: Any, b: Any, names: tuple[str, str] = (a, b)) -> Any
+```
+
+Line up two aligned sequences so any verb can compare them row by row.
+
+Each item becomes {names[0]: a_i, names[1]: b_i}; DataFrame rows become dicts. The
+result is a Series on the first pandas input's index, or a list. Use it for matching
+records, checking answers against references, or scoring a query against candidates:
+
+    hunch.score(hunch.pairs(crm, vendors), ["different", "related", "same company"],
+                instructions="Are a and b the same company?")
 
 ## generate
 
@@ -140,15 +197,17 @@ or for pandas a DataFrame with text / passed / rounds / failed.
 ## verify
 
 ```python
-hunch.verify(claims: Any, source: Any, *, threshold: float = 0.5, context: Any = None, detail: bool = False, client: Client | None = None) -> Any
+hunch.verify(claims: Any, source: Any, *, context: Any = None, detail: bool = False, client: Client | None = None) -> Any
 ```
 
-Is each claim supported by its source? For checking what an LLM or agent produced.
+Check each claim against its source: "supported", "contradicted", "not mentioned",
+or "misquoted".
 
-source is one document for all claims, or a sequence / Series aligned with claims
-(one source per claim). Returns bools in the caller's container (a Series named
-`supported` for pandas); detail=True gives probabilities too. Only what the source
-states counts: missing, contradicted, or partly supported claims are False.
+source is one document for all claims, or a sequence / Series aligned with claims (one
+per claim). Text the claim puts in quotes must appear in the source word for word, or
+the claim is "misquoted" without asking Jev; that catches fabricated quotes. Returns
+verdicts in the caller's container (a Series named `verdict` for pandas). To keep only
+good rows: `verify(...) == "supported"`. detail=True gives probabilities and shape.
 
 ## evaluate
 
@@ -175,6 +234,24 @@ check(..., detail=True) / where(..., detail=True). truth: True/False per row.
 precision=0.9 returns the lowest cutoff that keeps at least 90% of matches correct,
 which lets through as many true matches as possible. recall=0.9 returns the highest
 cutoff that still catches 90% of true matches. With neither, it maximizes F1.
+
+## Tree
+
+A label tree for classify(): {"Parent": {"Child": description or None, ...}, ...}.
+
+Marked explicitly because a plain dict's values may be object descriptions, not subtrees.
+
+## extract finders
+
+| Name | Pattern |
+| --- | --- |
+| `email` | `[\w.+-]+@[\w-]+(?:\.[\w-]+)+` |
+| `url` | `https?://[^\s<>\"')]+` |
+| `money` | `(?:[$€£¥]\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmM]\b)?|\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|dollars|euros)\b)` |
+| `number` | `-?\d[\d,]*(?:\.\d+)?%?` |
+| `percent` | `-?\d+(?:\.\d+)?\s?%` |
+| `phone` | `\+?\d[\d\s().-]{7,}\d` |
+| `date` | `\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s\d{1,2}(?:st|nd|rd|th)?,?\s\d{4}|\d{1,2}(?:st|nd|rd|th)?\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?,?\s\d{4})\b` |
 
 ## configure / Client
 
@@ -209,18 +286,19 @@ so code after them keeps running. Nothing is cached.
 ```python
 hunch.Classify(labels, instructions=None, split=KEEP, unsure=KEEP, context=None)
 hunch.Rate(levels, instructions=None, context=None)
-hunch.Check(statement, criteria=None, threshold=0.5, context=None)
+hunch.Check(statement, criteria=None, threshold=0.5, context=None, uncertain=None)
 ```
 
 ## detail=True columns on pandas
 
 | Verb | Columns |
 | --- | --- |
-| classify | `label`, `label_p`, `label_confidence`, `label_shape`, plus `label_by` when an LLM policy is set |
+| classify | `label`, `label_p`, `label_confidence`, `label_shape`, plus `label_by` when an LLM policy or backoff is set |
 | classify(multi_label=True) | `labels`, `labels_p` (dict of label to P) |
 | score | `score`, `score_level`, `score_confidence`, `score_shape` (or per dimension name) |
-| check | `check`, `check_p` (or per statement name) |
+| check | `check` (None for maybe), `check_p` (or per statement name) |
 | where | the input columns plus `match`, `match_p` |
+| extract | per field: value, `_p`, `_confidence`, `_shape` |
 | ask | per question name, as above |
-| verify | `supported`, `supported_p` |
+| verify | `verdict`, `verdict_p`, `verdict_shape` |
 | refine | `text`, `passed`, `rounds`, `failed` |

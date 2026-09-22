@@ -81,13 +81,31 @@ class MultiAnswer:
 
 @dataclass(frozen=True)
 class Feeling:
-    """A resolved Noul. Truthy when P(yes) reaches the threshold."""
+    """A resolved Noul. Truthy when P(yes) reaches the threshold.
+
+    With a `low` cutoff (check(uncertain=(low, high))), P(yes) between the two is "maybe".
+    """
 
     p: float
     threshold: float = 0.5
+    low: float | None = None
 
     def __bool__(self) -> bool:
         return self.p >= self.threshold
+
+    @property
+    def verdict(self) -> str:
+        """"yes", "no", or "maybe" (only with a low cutoff)."""
+        if self.p >= self.threshold:
+            return "yes"
+        if self.low is None or self.p <= self.low:
+            return "no"
+        return "maybe"
+
+    @property
+    def value(self) -> bool | None:
+        """True / False, or None for "maybe"."""
+        return {"yes": True, "no": False, "maybe": None}[self.verdict]
 
 
 @dataclass(frozen=True)
@@ -118,10 +136,13 @@ class Pick(_Shaped):
     """A resolved pick(): the winning candidate and how the field ranked."""
 
     winner: Any
+    """The chosen candidate, or None when pick(none=True) found nothing that fits."""
     ranked: list[tuple[Any, float]]
     """(candidate, probability) pairs, best first."""
     confidence: float
     shape: Shape
+    fits: float | None = None
+    """With none=True: P(at least one candidate satisfies the task)."""
 
 
 @dataclass(frozen=True)

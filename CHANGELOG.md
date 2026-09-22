@@ -1,9 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
+- New verb `extract(data, {field: finder})`: code finds candidate values (built-in `email`, `url`, `money`, `number`, `percent`, `phone`, `date`, or any regex or function), Jev picks which is the answer. Values are always copied from the text; unstated fields are `None`.
+- `pick(..., none=True)` asks in the same request whether any candidate fits, and returns `None` when nothing does.
+- `check(..., uncertain=(low, high))` returns `None` for the maybe band. Also on `Check()` in `ask`.
+- `hunch.pairs(a, b)` lines up two inputs so any verb can compare them.
+- `rank(..., query=)` scores every candidate against one query.
+- `classify` takes a `hunch.Tree` of labels and walks it with beam search (`beam=3`), returning "A > B > C". `backoff={child: parent}` answers with the parent when children are too close.
+- **Changed:** `verify` returns `"supported"`, `"contradicted"`, `"not mentioned"`, or `"misquoted"` instead of True / False. Quoted text in a claim must appear in the source. Filter with `== "supported"`. The pandas Series is named `verdict`.
 - Agent skill: `npx skills add steven-shoemaker/hunch --skill hunch`, or the Claude Code plugin `hunch@hunch`.
-- `hunch.verify` exposes its real signature and docstring.
 
 ## 0.8.0
 

@@ -7,6 +7,7 @@ from hunch.combine import verify as verify
 from hunch.engine import Plan, dry_run
 from hunch.evaluate import Evaluation, Threshold, evaluate, tune_threshold
 from hunch.exceptions import HunchError
+from hunch.extract import PATTERNS, extract, extract_async
 from hunch.generate import generate, generate_async
 from hunch.llm import LanguageModel, OpenAICompat, anthropic, azure, cerebras, ollama, openai, openrouter
 from hunch.shapes import Shape, ShapePolicy
@@ -15,6 +16,7 @@ from hunch.verbs import (
     Check,
     Classify,
     Rate,
+    Tree,
     ask,
     ask_async,
     check,
@@ -22,6 +24,7 @@ from hunch.verbs import (
     classify,
     classify_async,
     pick,
+    pairs,
     pick_async,
     rank,
     rank_async,
@@ -45,11 +48,13 @@ __all__ = [
     "Evaluation",
     "Plan",
     "Threshold",
+    "Tree",
     "Feeling",
     "HunchError",
     "LanguageModel",
     "MultiAnswer",
     "OpenAICompat",
+    "PATTERNS",
     "Pick",
     "Ranked",
     "Rate",
@@ -73,11 +78,14 @@ __all__ = [
     "discover_async",
     "dry_run",
     "evaluate",
+    "extract",
+    "extract_async",
     "generate",
     "generate_async",
     "ollama",
     "openai",
     "openrouter",
+    "pairs",
     "pick",
     "pick_async",
     "rank",
@@ -93,4 +101,4 @@ __all__ = [
     "where_async",
 ]
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"

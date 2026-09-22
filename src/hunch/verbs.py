@@ -94,7 +94,7 @@ def bare(value: Any) -> Any:
     if isinstance(value, Rating):
         return value.score
     if isinstance(value, Feeling):
-        return bool(value)
+        return value.value
     if isinstance(value, MultiAnswer):
         return list(value.labels)
     return value
@@ -109,7 +109,7 @@ def flatten(name: str, value: Any) -> dict[str, Any]:
     if isinstance(value, Rating):
         return {name: value.score, f"{name}_level": value.level, f"{name}_confidence": value.confidence, f"{name}_shape": value.shape}
     if isinstance(value, Feeling):
-        return {name: bool(value), f"{name}_p": value.p}
+        return {name: value.value, f"{name}_p": value.p}
     if isinstance(value, MultiAnswer):
         return {name: list(value.labels), f"{name}_p": dict(value.probabilities)}
     return {name: value}
@@ -129,6 +129,39 @@ def merge_context(base: Any, extra: Any) -> Any:
     left = base if isinstance(base, Mapping) else {"context": base}
     right = extra if isinstance(extra, Mapping) else {"context": extra}
     return {**left, **right}
+
+
+# ----------------------------------------------------------------------------- pairs
+
+
+class Tree(dict):
+    """A label tree for classify(): {"Parent": {"Child": description or None, ...}, ...}.
+
+    Marked explicitly because a plain dict's values may be object descriptions, not subtrees.
+    """
+
+
+
+def pairs(a: Any, b: Any, names: tuple[str, str] = ("a", "b")) -> Any:
+    """Line up two aligned sequences so any verb can compare them row by row.
+
+    Each item becomes {names[0]: a_i, names[1]: b_i}; DataFrame rows become dicts. The
+    result is a Series on the first pandas input's index, or a list. Use it for matching
+    records, checking answers against references, or scoring a query against candidates:
+
+        hunch.score(hunch.pairs(crm, vendors), ["different", "related", "same company"],
+                    instructions="Are a and b the same company?")
+    """
+    left, right = box(a), box(b)
+    if len(left.items) != len(right.items):
+        raise HunchError(f"pairs() got {len(left.items)} and {len(right.items)} items; they must line up.")
+    rows = [{names[0]: x, names[1]: y} for x, y in zip(left.items, right.items)]
+    index = left.index if left.pandas else (right.index if right.pandas else None)
+    if index is None:
+        return rows
+    import pandas as pd
+
+    return pd.Series(rows, index=index, dtype=object)
 
 
 # ----------------------------------------------------------------------------- ask
@@ -175,6 +208,7 @@ class Check:
     criteria: Mapping[str, str | None] | None = None
     threshold: float = 0.5
     context: Any = None
+    uncertain: tuple[float, float] | None = None
 
 
 Spec = Classify | Rate | Check
@@ -234,7 +268,8 @@ def ask(
             if spec.criteria:
                 crit = {"true": spec.criteria.get("true"), "false": spec.criteria.get("false")}
             built[name] = Noul(instructions=spec.statement, criteria=crit)
-            readers[name] = _skip(lambda raw, t=spec.threshold: Feeling(float(raw["noul"]), t))
+            low, high = _band(spec.uncertain, spec.threshold)
+            readers[name] = _skip(lambda raw, t=high, lo=low: Feeling(float(raw["noul"]), t, lo))
         else:
             raise HunchError(f"ask() question {name!r} must be Classify, Rate, or Check.")
         contexts[name] = merge_context(context, spec.context)
@@ -282,10 +317,19 @@ def classify(
     threshold: float = 0.5,
     split: Any = KEEP,
     unsure: Any = KEEP,
+    backoff: Mapping[str, str] | None = None,
+    beam: int = 3,
     detail: bool = False,
     client: Client | None = None,
 ) -> Any:
     """Assign data to one of the labels (or several with multi_label=True).
+
+    labels may be a hunch.Tree({"Parent": {"Child": description or None}}). Jev walks it
+    level by level with beam search, keeping the best `beam` paths, and returns the path
+    as "Parent > Child > Leaf".
+
+    backoff={child: parent} answers with the parent when Jev can't decide between
+    children but is sure of the family ("Laptops" vs "Tablets" -> "Computers").
 
     labels: a sequence of strings, an Enum class, or a mapping label -> description.
     Returns the label (an Enum member when labels is an Enum). detail=True returns
@@ -300,6 +344,11 @@ def classify(
     """
     jev = resolve(client)
     data_box = box(data, columns)
+    if isinstance(labels, Tree):
+        if multi_label:
+            raise HunchError("multi_label=True doesn't work with a label tree.")
+        answers = _classify_tree(jev, data_box.items, labels, beam, instructions, context)
+        return data_box.out([{"label": a} for a in answers], detail=detail, squeeze=True)
     keys, describe, back = _labels(labels)
     if not keys:
         raise HunchError("classify() needs at least one label.")
@@ -337,8 +386,106 @@ def classify(
     raws = engine.run(jev, states, {"q": question}, label="classify")
     read = _skip(lambda raw: _answer(jev, raw, back))
     answers = [read(raw["q"]) for raw in raws]
+    if backoff:
+        answers = [_back_off(jev, a, backoff) for a in answers]
     answers = _resolve(jev, data_box.items, answers, keys, describe, back, instructions, context, split, unsure, detail)
     return data_box.out([{"label": a} for a in answers], detail=detail, squeeze=True)
+
+
+def _back_off(jev: Client, answer: Any, parents: Mapping[str, str]) -> Any:
+    """For a shaky answer, sum probability by parent; answer with the parent if it's sure.
+
+    Every answer gets a `by`, so the label_by column exists whether or not anything backed off."""
+    from dataclasses import replace
+
+    if not isinstance(answer, Answer):
+        return answer
+    if answer.by is None:
+        answer = replace(answer, by="jev")
+    if answer.shape == "sure":
+        return answer
+    mass: dict[str, float] = {}
+    for label, p in answer.probabilities.items():
+        parent = parents.get(label, label)
+        mass[parent] = mass.get(parent, 0.0) + p
+    parent, p = max(mass.items(), key=lambda kv: kv[1])
+    if parent == answer.top or p < jev.policy.sure_peak:
+        return answer
+    return Answer(parent, mass, answer.confidence, jev.policy.classify(mass), by="parent")
+
+
+def _classify_tree(jev: Client, items: list[Any], tree: Mapping[str, Any], beam: int,
+                   instructions: str | None, context: Any) -> list[Any]:
+    """Beam search down a label tree. One Choice per (level, node) batch; paths scored by
+    the geometric mean of their step probabilities."""
+    import math
+
+    if beam < 1:
+        raise HunchError("beam= must be at least 1.")
+
+    def node(path: tuple[str, ...]) -> Any:
+        here: Any = tree
+        for step in path:
+            here = here[step]
+        return here
+
+    def describe(child: Any) -> Any:
+        if isinstance(child, Mapping):  # inside a Tree, a nested dict is a sub-tree
+            return {"includes": [str(k) for k in child]}
+        return child
+
+    # per item: list of (path, log-probability sum)
+    beams: list[list[tuple[tuple[str, ...], float]]] = [[((), 0.0)] for _ in items]
+    alive = [True] * len(items)
+    while True:
+        todo: dict[tuple[str, ...], list[int]] = {}
+        for i, paths in enumerate(beams):
+            for path, _ in paths:
+                if alive[i] and isinstance(node(path), Mapping):
+                    todo.setdefault(path, []).append(i)
+        if not todo:
+            break
+        answers: dict[tuple[tuple[str, ...], int], dict[str, float] | None] = {}
+        for path, idxs in todo.items():
+            children = node(path)
+            question = Choice(
+                instructions=_object(question=instructions or "Which category best describes the input?",
+                                     within=" > ".join(path) or None),
+                criteria={str(k): describe(v) for k, v in children.items()},
+            )
+            idxs = list(dict.fromkeys(idxs))
+            raws = engine.run(jev, [engine.build_state(items[i], context) for i in idxs], {"q": question},
+                              label="classify " + (path[-1] if path else "tree"))
+            for i, raw in zip(idxs, raws):
+                q = raw["q"]
+                answers[(path, i)] = None if q is None else {str(k): float(v) for k, v in q["probabilities"].items()}
+        for i, paths in enumerate(beams):
+            grown: list[tuple[tuple[str, ...], float]] = []
+            for path, logp in paths:
+                if not isinstance(node(path), Mapping):
+                    grown.append((path, logp))
+                    continue
+                probs = answers.get((path, i))
+                if probs is None:
+                    continue
+                grown += [(path + (child,), logp + math.log(max(p, 1e-12))) for child, p in probs.items()]
+            if not grown:
+                alive[i] = False
+                beams[i] = []
+                continue
+            grown.sort(key=lambda t: t[1] / len(t[0]), reverse=True)
+            beams[i] = grown[:beam]
+    out: list[Any] = []
+    for paths in beams:
+        if not paths:
+            out.append(None)
+            continue
+        scores = {" > ".join(p): math.exp(logp / len(p)) for p, logp in paths}
+        total = sum(scores.values()) or 1.0
+        probs = {k: v / total for k, v in scores.items()}
+        best = max(scores, key=scores.get)
+        out.append(Answer(best, probs, scores[best], jev.policy.classify(probs)))
+    return out
 
 
 def _resolve(
@@ -434,11 +581,11 @@ def score(
 
 
 @overload
-def check(data: pd.DataFrame | pd.Series, statement: str | Mapping[str, str], *, columns: Sequence[str] | None = ..., criteria: Mapping[str, str | None] | None = ..., context: Any = ..., threshold: float = ..., detail: bool = ..., client: Client | None = ...) -> pd.Series | pd.DataFrame: ...
+def check(data: pd.DataFrame | pd.Series, statement: str | Mapping[str, str], *, columns: Sequence[str] | None = ..., criteria: Mapping[str, str | None] | None = ..., context: Any = ..., threshold: float = ..., uncertain: tuple[float, float] | None = ..., detail: bool = ..., client: Client | None = ...) -> pd.Series | pd.DataFrame: ...
 @overload
-def check(data: list[Any] | tuple[Any, ...], statement: str | Mapping[str, str], *, columns: Sequence[str] | None = ..., criteria: Mapping[str, str | None] | None = ..., context: Any = ..., threshold: float = ..., detail: bool = ..., client: Client | None = ...) -> list[Any]: ...
+def check(data: list[Any] | tuple[Any, ...], statement: str | Mapping[str, str], *, columns: Sequence[str] | None = ..., criteria: Mapping[str, str | None] | None = ..., context: Any = ..., threshold: float = ..., uncertain: tuple[float, float] | None = ..., detail: bool = ..., client: Client | None = ...) -> list[Any]: ...
 @overload
-def check(data: Any, statement: str | Mapping[str, str], *, columns: Sequence[str] | None = ..., criteria: Mapping[str, str | None] | None = ..., context: Any = ..., threshold: float = ..., detail: bool = ..., client: Client | None = ...) -> Any: ...
+def check(data: Any, statement: str | Mapping[str, str], *, columns: Sequence[str] | None = ..., criteria: Mapping[str, str | None] | None = ..., context: Any = ..., threshold: float = ..., uncertain: tuple[float, float] | None = ..., detail: bool = ..., client: Client | None = ...) -> Any: ...
 def check(
     data: Any,
     statement: str | Mapping[str, str],
@@ -447,15 +594,21 @@ def check(
     criteria: Mapping[str, str | None] | None = None,
     context: Any = None,
     threshold: float = 0.5,
+    uncertain: tuple[float, float] | None = None,
     detail: bool = False,
     client: Client | None = None,
 ) -> Any:
     """Does the statement hold for the data? Returns bool (P(yes) >= threshold).
 
+    uncertain=(0.3, 0.7) adds a "maybe": P(yes) at or above 0.7 is True, at or below 0.3
+    is False, and in between is None, so borderline rows can go to review instead of
+    being forced to a side. It replaces threshold.
+
     statement may be a mapping name -> statement to check several in one request.
     criteria={"true": ..., "false": ...} sharpens the boundary. detail=True returns Feeling(s).
     columns= narrows a DataFrame.
     """
+    low, high = _band(uncertain, threshold)
     jev = resolve(client)
     data_box = box(data, columns)
     named = isinstance(statement, Mapping)
@@ -466,7 +619,7 @@ def check(
     states = [engine.build_state(item, context) for item in data_box.items]
     questions = {name: Noul(instructions=text, criteria=crit) for name, text in dims.items()}
     raws = engine.run(jev, states, questions, label="check")
-    read = _skip(lambda raw: Feeling(float(raw["noul"]), threshold))
+    read = _skip(lambda raw: Feeling(float(raw["noul"]), high, low))
     rows = [{name: read(raw[name]) for name in dims} for raw in raws]
     return data_box.out(rows, detail=detail, squeeze=not named)
 
@@ -524,6 +677,8 @@ def pick(
     candidates: Any,
     instructions: str,
     *,
+    none: bool = False,
+    none_threshold: float = 0.5,
     columns: Sequence[str] | None = None,
     context: Any = None,
     detail: bool = False,
@@ -534,6 +689,10 @@ def pick(
     A list returns the winning item. A Series or DataFrame returns the winner's index
     label, so df.loc[winner] is the row; columns= limits what Jev reads. More than 255
     candidates run as a tournament. detail=True returns Pick with every candidate's probability.
+
+    A Choice always crowns someone. none=True also asks, in the same request, whether any
+    candidate actually satisfies the task, and returns None when P(fits) is below
+    none_threshold.
     """
     jev = resolve(client)
     data_box = box(candidates, columns)
@@ -545,46 +704,61 @@ def pick(
     if not instructions or not instructions.strip():
         raise HunchError("pick() needs instructions saying what 'best' means.")
     keys: list[Hashable] = list(data_box.index) if data_box.pandas else field
-    state = engine.build_state({"task": instructions}, context)
 
-    def heat(group: list[int]) -> Pick:
-        if len(group) == 1:
+    def heat(group: list[int], final: bool) -> Pick:
+        ask_fits = none and final
+        if len(group) == 1 and not ask_fits:
             return Pick(group[0], [(group[0], 1.0)], 1.0, "sure")
         criteria = {f"c{i}": engine.jsonable(field[i]) for i in group}
-        question = Choice(
-            instructions={"task": instructions, "note": "Each option is one candidate."},
-            criteria=criteria,
-        )
-        raw = engine.run(jev, [state], {"q": question}, label="pick")[0]["q"]
-        if raw is None:
+        questions: dict[str, Any] = {}
+        if len(group) > 1:
+            questions["q"] = Choice(
+                instructions={"task": instructions, "note": "Each option is one candidate."},
+                criteria=criteria,
+            )
+        task: dict[str, Any] = {"task": instructions}
+        if ask_fits:
+            task["candidates"] = criteria
+            questions["fits"] = Noul(
+                instructions="Does at least one of the candidates actually satisfy the task well?",
+                criteria={"true": "at least one candidate is a genuinely good fit for the task",
+                          "false": "none of the candidates is a good fit; picking any would be settling"},
+            )
+        raw = engine.run(jev, [engine.build_state(task, context)], questions, label="pick")[0]
+        if any(v is None for v in raw.values()):
             raise HunchError("pick() request failed; see the warning above.")
-        probs = {cid: float(p) for cid, p in raw["probabilities"].items()}
+        fits = float(raw["fits"]["noul"]) if ask_fits else None
+        if "q" not in raw:
+            return Pick(group[0], [(group[0], 1.0)], 1.0, "sure", fits)
+        probs = {cid: float(p) for cid, p in raw["q"]["probabilities"].items()}
         ranked = sorted(((int(cid[1:]), p) for cid, p in probs.items()), key=lambda t: t[1], reverse=True)
-        confidence = float(raw["confidence"])
-        return Pick(int(raw["choice"][1:]), ranked, confidence, jev.policy.classify(probs))
+        return Pick(int(raw["q"]["choice"][1:]), ranked, float(raw["q"]["confidence"]), jev.policy.classify(probs), fits)
 
     result = _tournament(list(range(len(field))), heat)
-    result = Pick(keys[result.winner], [(keys[i], p) for i, p in result.ranked], result.confidence, result.shape)
+    winner = keys[result.winner]
+    if none and result.fits is not None and result.fits < none_threshold:
+        winner = None
+    result = Pick(winner, [(keys[i], p) for i, p in result.ranked], result.confidence, result.shape, result.fits)
     return result if detail else result.winner
 
 
-def _tournament(field: list[int], heat: Callable[[list[int]], Pick]) -> Pick:
+def _tournament(field: list[int], heat: Callable[[list[int], bool], Pick]) -> Pick:
     # ponytail: heats of 255 then a final; a bracket with seeding if fields get huge
     while len(field) > MAX_CHOICE_OPTIONS:
         field = [
-            heat(field[i : i + MAX_CHOICE_OPTIONS]).winner
+            heat(field[i : i + MAX_CHOICE_OPTIONS], False).winner
             for i in range(0, len(field), MAX_CHOICE_OPTIONS)
         ]
-    return heat(field)
+    return heat(field, True)
 
 
 # ----------------------------------------------------------------------------- rank
 
 
 @overload
-def rank(candidates: pd.DataFrame | pd.Series, dimensions: str | Mapping[str, str], levels: Sequence[str], *, columns: Sequence[str] | None = ..., weights: Mapping[str, float] | None = ..., context: Any = ..., client: Client | None = ...) -> pd.DataFrame: ...
+def rank(candidates: pd.DataFrame | pd.Series, dimensions: str | Mapping[str, str], levels: Sequence[str], *, columns: Sequence[str] | None = ..., weights: Mapping[str, float] | None = ..., query: Any = ..., context: Any = ..., client: Client | None = ...) -> pd.DataFrame: ...
 @overload
-def rank(candidates: Sequence[Any], dimensions: str | Mapping[str, str], levels: Sequence[str], *, columns: Sequence[str] | None = ..., weights: Mapping[str, float] | None = ..., context: Any = ..., client: Client | None = ...) -> list[Ranked]: ...
+def rank(candidates: Sequence[Any], dimensions: str | Mapping[str, str], levels: Sequence[str], *, columns: Sequence[str] | None = ..., weights: Mapping[str, float] | None = ..., query: Any = ..., context: Any = ..., client: Client | None = ...) -> list[Ranked]: ...
 def rank(
     candidates: Any,
     dimensions: str | Mapping[str, str],
@@ -592,10 +766,14 @@ def rank(
     *,
     columns: Sequence[str] | None = None,
     weights: Mapping[str, float] | None = None,
+    query: Any = None,
     context: Any = None,
     client: Client | None = None,
 ) -> Any:
     """Score every candidate on each dimension, weight, and sort best first.
+
+    query= is what the candidates are being ranked for (a search, a job description, a
+    buyer profile); every candidate is scored against it, which makes rank a reranker.
 
     Composite = weighted mean of normalized (0–1) dimension scores. Weights default to 1.
     A list returns Ranked rows. A Series or DataFrame returns a DataFrame on the same
@@ -611,6 +789,8 @@ def rank(
     total = sum(w.values())
     if total <= 0:
         raise HunchError("rank() weights must sum to more than zero.")
+    if query is not None:
+        context = merge_context(context, {"query": query})
     ratings = score(data_box.items, levels, instructions=dims, context=context, detail=True, client=client)
     nan = float("nan")
     composites = [
@@ -710,6 +890,15 @@ def _dims(spec: Any, default: str | None, base: str) -> dict[str, str]:
             raise HunchError("A statement is required.")
         return {base: default}
     return {base: str(spec)}
+
+
+def _band(uncertain: tuple[float, float] | None, threshold: float) -> tuple[float | None, float]:
+    if uncertain is None:
+        return None, threshold
+    low, high = uncertain
+    if not 0 <= low < high <= 1:
+        raise HunchError("uncertain= needs (low, high) with 0 <= low < high <= 1.")
+    return low, high
 
 
 def _is_llm(value: Any) -> bool:

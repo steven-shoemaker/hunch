@@ -118,23 +118,34 @@ def test_refine_stops_after_rounds_and_reports_what_failed() -> None:
 # ----------------------------------------------------------------------------- verify
 
 
-def supported(state, questions):
-    q = questions["check"]
-    assert q.criteria["false"].startswith("the source contradicts")
+def verdicts(state, questions):
+    q = questions["q"]
+    assert list(q.criteria) == ["supported", "contradicted", "not mentioned"]
     row = state["input"]
-    claim, source = (row["claim"], row["source"]) if isinstance(row, dict) else (row, state["source"])
-    return response(check=noul_answer(0.9 if claim in source else 0.1))
+    claim, source = row["claim"], row["source"]
+    pick = "contradicted" if "not " + claim in source else ("supported" if claim in source else "not mentioned")
+    probs = {k: (0.9 if k == pick else 0.05) for k in q.criteria}
+    return response(q=choice_answer(pick, probs, 0.85))
 
 
-def test_verify_against_one_source_and_per_row_sources() -> None:
-    jev = Client(client=FakeJev(supported), max_workers=1)
-    diff = "- return x\n+ return x + 1"
-    assert verify(["return x + 1", "deletes the database"], diff, client=jev) == [True, False]
-    claims = pd.Series(["a", "b"], index=[3, 4])
-    out = verify(claims, ["has a", "has c"], client=jev)
-    assert out.name == "supported" and out.tolist() == [True, False] and list(out.index) == [3, 4]
-    detail = verify(claims, ["has a", "has c"], detail=True, client=jev)
-    assert list(detail.columns) == ["supported", "supported_p"]
+def test_verify_tells_contradicted_from_not_mentioned() -> None:
+    jev = Client(client=FakeJev(verdicts), max_workers=1)
+    source = "the change skips None values. it is not cached."
+    out = verify(["skips None values", "cached", "renames the function"], source, client=jev)
+    assert out == ["supported", "contradicted", "not mentioned"]
+    spy = FakeJev(verdicts)
+    verify("skips None values", source, client=Client(client=spy))
+    assert spy.calls[0][0]["input"] == {"claim": "skips None values", "source": source}
+
+
+def test_verify_catches_fabricated_quotes_and_keeps_pandas_shape() -> None:
+    jev = Client(client=FakeJev(verdicts), max_workers=1)
+    claims = pd.Series(['the docs say "never retries on failure"', "a"], index=[3, 4])
+    out = verify(claims, ["retries up to twice on failure", "has a"], client=jev)
+    assert out.name == "verdict" and out.tolist() == ["misquoted", "supported"] and list(out.index) == [3, 4]
+    assert list(claims[out == "supported"].index) == [4]
+    detail = verify(claims, ["x", "has a"], detail=True, client=jev)
+    assert list(detail.columns) == ["verdict", "verdict_p", "verdict_shape"]
     with pytest.raises(HunchError, match="2 claims and 1 sources"):
         verify(["a", "b"], ["only one"], client=jev)
 
