@@ -1,11 +1,16 @@
-"""Run a fixed set of questions over many states: dedupe, cache, thread pool, normalize answers."""
+"""Run a fixed set of questions over many states: dedupe, cache, concurrency, normalize answers."""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
+import warnings
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic_core import to_jsonable_python
@@ -15,6 +20,44 @@ from hunch.exceptions import HunchError
 
 RawAnswer = dict[str, Any]
 """One Jev answer as plain JSON: {"type": "choice"|"noul"|"score", ...wire fields}."""
+
+LOOP: ContextVar[asyncio.AbstractEventLoop | None] = ContextVar("hunch_loop", default=None)
+"""Set by the _async verbs: requests then run as coroutines on this loop."""
+
+
+@dataclass
+class Plan:
+    """What a block of hunch calls would send. Filled in by dry_run()."""
+
+    requests: int = 0
+    """Distinct uncached Jev requests. Rematches from split="rematch" are not counted."""
+    questions: int = 0
+    """Questions across those requests."""
+    items: int = 0
+    """Items handed to verbs, before dedupe and cache."""
+    calls: list[tuple[str, int]] = field(default_factory=list)
+    """(verb, requests) per engine call."""
+
+    def __repr__(self) -> str:
+        return f"Plan(requests={self.requests}, questions={self.questions}, items={self.items})"
+
+
+_PLAN: ContextVar[Plan | None] = ContextVar("hunch_plan", default=None)
+
+
+@contextmanager
+def dry_run() -> Iterator[Plan]:
+    """Count what the enclosed hunch calls would send to Jev, without sending anything.
+
+    Verbs return placeholder answers inside the block (first label, score 0, check False),
+    so code after them keeps running. Nothing is cached.
+    """
+    plan = Plan()
+    token = _PLAN.set(plan)
+    try:
+        yield plan
+    finally:
+        _PLAN.reset(token)
 
 
 def jsonable(value: Any) -> Any:
@@ -58,19 +101,78 @@ def run(
         if len(results[index]) < len(questions):
             todo.setdefault(state_key, []).append(index)
 
-    def one(state_key: str) -> dict[str, RawAnswer]:
+    plan = _PLAN.get()
+    keys = list(todo)
+    if plan is not None:
+        plan.items += len(states)
+        plan.requests += len(keys)
+        plan.questions += sum(len(questions) - len(results[todo[k][0]]) for k in keys)
+        plan.calls.append((label, len(keys)))
+        for key in keys:
+            fake = {qid: placeholder(q) for qid, q in questions.items() if qid not in results[todo[key][0]]}
+            for index in todo[key]:
+                results[index].update(fake)
+        return results
+
+    def prepare(state_key: str) -> tuple[Any, dict[str, Any]]:
         first = todo[state_key][0]
-        missing = {qid: q for qid, q in questions.items() if qid not in results[first]}
-        raw = client.jev.system_one(state=states[first], questions=missing)
+        return states[first], {qid: q for qid, q in questions.items() if qid not in results[first]}
+
+    def finish(state_key: str, missing: Mapping[str, Any], raw: Any) -> dict[str, RawAnswer]:
         client.meter.call(raw)
         answers = {qid: normalize(raw, qid) for qid in missing}
         for qid, answer in answers.items():
             client.cache.set(f"{state_key}|{encoded[qid]}", answer)
         return answers
 
-    keys = list(todo)
+    failures: list[BaseException] = []
+
+    def failed(missing: Mapping[str, Any], error: BaseException) -> dict[str, Any]:
+        if client.errors == "raise":
+            raise error
+        failures.append(error)
+        return {qid: None for qid in missing}
+
+    def one(state_key: str) -> dict[str, Any]:
+        state, missing = prepare(state_key)
+        wait = client.wait_for_slot()
+        if wait:
+            time.sleep(wait)
+        try:
+            return finish(state_key, missing, client.jev.system_one(state=state, questions=missing))
+        except Exception as error:  # noqa: BLE001 - errors="skip" is the caller's explicit choice
+            return failed(missing, error)
+
     bar = progress(client, len(keys), label)
-    if len(keys) <= 1 or client.max_workers <= 1:
+    loop = LOOP.get()
+    ajev = client.async_jev() if loop is not None and keys else None
+    if ajev is not None:
+
+        async def gather() -> list[dict[str, Any]]:
+            gate = asyncio.Semaphore(client.max_concurrency)
+            ticker = bar(iter(()))
+            tick = getattr(ticker, "update", lambda n: None)
+
+            async def one_async(state_key: str) -> dict[str, Any]:
+                state, missing = prepare(state_key)
+                async with gate:
+                    wait = client.wait_for_slot()
+                    if wait:
+                        await asyncio.sleep(wait)
+                    try:
+                        out = finish(state_key, missing, await ajev.system_one(state=state, questions=missing))
+                    except Exception as error:  # noqa: BLE001
+                        out = failed(missing, error)
+                tick(1)
+                return out
+
+            try:
+                return list(await asyncio.gather(*(one_async(k) for k in keys)))
+            finally:
+                getattr(ticker, "close", lambda: None)()
+
+        fetched = asyncio.run_coroutine_threadsafe(gather(), loop).result()
+    elif len(keys) <= 1 or client.max_workers <= 1:
         fetched = list(bar(map(one, keys)))
     else:
         with ThreadPoolExecutor(max_workers=client.max_workers) as pool:
@@ -78,7 +180,26 @@ def run(
     for key, answers in zip(keys, fetched):
         for index in todo[key]:
             results[index].update(answers)
+    if failures:
+        warnings.warn(
+            f"hunch {label}: {len(failures)} of {len(keys)} requests failed and were skipped "
+            f"(their rows are None). First error: {failures[0]!r}",
+            stacklevel=3,
+        )
     return results
+
+
+def placeholder(question: Any) -> RawAnswer:
+    """A deterministic stand-in answer used by dry_run()."""
+    if question.type == "noul":
+        return {"type": "noul", "noul": 0.0}
+    if question.type == "score":
+        legend = {str(i): str(c) for i, c in enumerate(question.criteria)}
+        return {"type": "score", "score": 0.0, "confidence": 1.0, "legend": legend,
+                "probabilities": {k: (1.0 if k == "0" else 0.0) for k in legend}}
+    keys = [str(k) for k in question.criteria]
+    return {"type": "choice", "choice": keys[0], "confidence": 1.0,
+            "probabilities": {k: (1.0 if k == keys[0] else 0.0) for k in keys}}
 
 
 def progress(client: Client, total: int, label: str) -> Any:

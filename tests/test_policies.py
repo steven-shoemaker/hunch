@@ -12,7 +12,7 @@ def handler(state, questions):
     title = state["input"]
     q = questions["q"]
     if len(q.criteria) == 2:  # rematch between the top two
-        return response(q=choice_answer("Director", {"Manager": 0.3, "Director": 0.7}, 0.8))
+        return response(q=choice_answer("Director", {"Manager": 0.15, "Director": 0.85}, 0.8))
     if title == "Head of Sales":
         return response(q=choice_answer("Manager", {"IC": 0.04, "Manager": 0.50, "Director": 0.46}, 0.5))
     if title == "Consultant":

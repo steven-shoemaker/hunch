@@ -14,7 +14,7 @@ def scorer(state, questions):
     for qid, q in questions.items():
         assert q.type == "score" and list(q.criteria) == LEVELS
         value = 2.6 if qid in ("score", "hook") else 0.4
-        probs = {0: 0.05, 1: 0.05, 2: 0.2, 3: 0.7} if value > 2 else {0: 0.7, 1: 0.2, 2: 0.05, 3: 0.05}
+        probs = {0: 0.02, 1: 0.03, 2: 0.1, 3: 0.85} if value > 2 else {0: 0.7, 1: 0.2, 2: 0.05, 3: 0.05}
         answers[qid] = score_answer(value, probs, 0.8, LEGEND)
     return response(**answers)
 

@@ -2,6 +2,8 @@
 
 from hunch.answer import Answer, Feeling, MultiAnswer, Pick, Ranked, Rating
 from hunch.client import Client, configure, default
+from hunch.engine import Plan, dry_run
+from hunch.evaluate import Evaluation, Threshold, evaluate, tune_threshold
 from hunch.exceptions import HunchError
 from hunch.generate import generate, generate_async
 from hunch.llm import LanguageModel, OpenAICompat, cerebras, openai, openrouter
@@ -37,6 +39,9 @@ __all__ = [
     "Check",
     "Classify",
     "Client",
+    "Evaluation",
+    "Plan",
+    "Threshold",
     "Feeling",
     "HunchError",
     "LanguageModel",
@@ -58,6 +63,8 @@ __all__ = [
     "classify_async",
     "configure",
     "default",
+    "dry_run",
+    "evaluate",
     "generate",
     "generate_async",
     "openai",
@@ -68,8 +75,9 @@ __all__ = [
     "rank_async",
     "score",
     "score_async",
+    "tune_threshold",
     "where",
     "where_async",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

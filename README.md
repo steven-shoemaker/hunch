@@ -82,7 +82,7 @@ best   = hunch.pick(titles, "most likely to earn the click for the target query"
 ```python
 suspect = txns.hunch.where("looks like a duplicate or erroneous charge",
                            columns=["merchant", "amount", "date", "memo"])
-txns["account"] = txns[["merchant", "memo"]].hunch.classify(GLAccount)   # your Enum of GL accounts
+txns["account"] = txns.hunch.classify(GLAccount, columns=["merchant", "memo"])   # your Enum of GL accounts
 ```
 
 ## Verbs
@@ -98,7 +98,7 @@ txns["account"] = txns[["merchant", "memo"]].hunch.classify(GLAccount)   # your 
 | `ask(data, {name: Classify(...) \| Rate(...) \| Check(...)})` | all of the above, one request per item | dict per item, or a DataFrame for a Series |
 | `where(data, statement, columns=None, threshold=0.5)` | Noul per row, then filter | the rows that match, strongest first |
 
-Hand any verb one item and you get one answer back. Hand it a list, a tuple, or a pandas Series and you get the same container back, same length, same index. Hand it a DataFrame and each row is the thing being judged, so Jev sees every column, and the answers come back on the frame's index ready to `join`. Duplicate values are only asked once, and the distinct ones run in parallel across `max_workers` threads. All of them take `context=` for extra state that should ride along with the input, and `client=` if you don't want the default. There's an `_async` twin of each, too.
+Hand any verb one item and you get one answer back. Hand it a list, a tuple, or a pandas Series and you get the same container back, same length, same index. Hand it a DataFrame and each row is the thing being judged, so Jev sees every column, and the answers come back on the frame's index ready to `join`. Pass `columns=` to any verb to limit which columns of a DataFrame Jev reads; the answers still line up with the whole frame. Duplicate values are only asked once, and the distinct ones run in parallel across `max_workers` threads. All of them take `context=` for extra state that should ride along with the input, and `client=` if you don't want the default. Each has an `_async` twin that runs its requests on your event loop through the async SDK client, up to `max_concurrency` at a time, which is the one to use inside a service.
 
 `labels` can be a plain list, an `Enum` class (you get members back, not strings), or a dict of label to description when the names alone are ambiguous. On `score` and `check`, `instructions` can be a dict of name to question. Those go out as one request per item and you get a dict back per item, which is how you score five dimensions without five round trips.
 
@@ -146,6 +146,8 @@ answers = ask(prospects["JOB_TITLE"], {
 prospects = prospects.join(answers)
 ```
 
+Context on the call rides along with every question. When only one question should see something, put it on that question instead: `Rate([...], "How compatible is this profile with the person in context?", context={"looking_for": ME})`. Questions whose context differs can't share a request, so `ask` groups them and sends one request per group.
+
 With a Series or DataFrame, `detail=True` spreads each answer into columns instead of handing you objects: `fit`, `fit_level`, `fit_confidence`, `fit_shape` for a score; `label`, `label_p`, `label_confidence`, `label_shape` for a classify; `check`, `check_p` for a check. No lambdas to unpack anything.
 
 `pick` on a Series or DataFrame returns the winner's index label, so `df.loc[best]` is the row. `rank` returns a DataFrame with `composite` and one column per dimension, sorted best first, on the same index.
@@ -178,7 +180,30 @@ seniority = hunch.classify(df["title"], ["IC", "Manager", "Director"], split="re
 
 `split="rematch"` re-asks between the top two labels, only for the rows that were split, batched and cached like everything else. Any other value is used as the label for those rows. `unsure="review"` does the same for flat distributions. Both default to keeping the first answer. For anything more custom, `detail=True` gives you the `Answer` and `.on(sure=, split=, unsure=)` branches on it; pass a callable for a branch that costs a call.
 
-Cutoffs live on `ShapePolicy`. One thing worth internalizing: confidence measures how peaked the distribution is, not whether the label is correct. A confidently wrong answer is still confident. Changing the policy never re-runs inference, because the cache stores the raw distribution and the shape is computed on the way out.
+Cutoffs live on `ShapePolicy` and work on the probabilities alone: `sure_peak`, `unsure_peak`, `split_margin`, `split_mass`. Jev's `confidence` is derived from the top probability, so it carries no extra information and the policy ignores it. Neither says whether the label is correct. A confidently wrong answer is still confident, which is why `evaluate` below exists. Changing the policy never re-runs inference, because the cache stores the raw distribution and the shape is computed on the way out.
+
+## Check it before you trust it
+
+Label 50 to 100 rows by hand, then measure:
+
+```python
+pred = hunch.classify(sample["title"], LEVELS, detail=True)
+hunch.evaluate(pred, sample["true_level"])
+# Evaluation(accuracy=91.0% on 100 rows, by shape: sure: 98% of 71, split: 79% of 19, unsure: 60% of 10)
+```
+
+`by_shape` tells you whether "sure" really means right on your data, and so which rows to send for review. `.errors` lists every miss, and `.table()` gives the confusion matrix.
+
+For `check` and `where`, pick the cutoff from data instead of by feel:
+
+```python
+p = hunch.check(sample, "is an economic buyer", detail=True)
+cut = hunch.tune_threshold(p, sample["is_buyer"], precision=0.9)
+# Threshold(threshold=0.71, precision=0.92, recall=0.64, ...)
+buyers = df.hunch.where("is an economic buyer", threshold=cut.threshold)
+```
+
+`precision=` gives the lowest cutoff that keeps that share of matches correct. `recall=` gives the highest cutoff that still catches that share of true matches. With neither, it maximizes F1.
 
 ## Generate, rank, pick
 
@@ -202,17 +227,36 @@ finalists = [row.item for row in ranked[:5]]
 winner = hunch.pick(finalists, "the tweet most likely to make a Python developer install hunch")
 ```
 
-`generate` accepts `str`, `int`, dataclasses, `TypedDict`s, pydantic models, `list[str]`, and any other type pydantic can validate. `hunch.openai`, `hunch.cerebras`, and `hunch.openrouter` are OpenAI-compatible adapters; pass `llm=` on `configure()` or on `generate()`.
+`generate` accepts `str`, `int`, dataclasses, `TypedDict`s, pydantic models, `list[str]`, and any other type pydantic can validate. Large `n` is drawn in batches of 25 that avoid repeating earlier items, and the result is cached, so re-running a notebook cell returns the same items. Pass `fresh=True` for a new draw. `hunch.openai`, `hunch.cerebras`, and `hunch.openrouter` are OpenAI-compatible adapters; pass `llm=` on `configure()` or on `generate()`.
 
 ## Client
 
 ```python
-jev = hunch.Client(api_key=..., model="jev-latest", cache="~/.cache/hunch", max_workers=8, policy=ShapePolicy(...))
+jev = hunch.Client(
+    api_key=..., model="jev-latest", cache="~/.cache/hunch",
+    max_workers=8,          # threads for sync calls
+    max_concurrency=64,     # requests in flight for _async calls
+    max_rps=None,           # cap requests per second, e.g. 20
+    errors="raise",         # or "skip": failed rows come back None, with a warning
+    policy=ShapePolicy(...),
+)
 hunch.classify(x, labels, client=jev)
 jev.usage   # calls, cache hits, tokens, model
 ```
 
 `hunch.configure(...)` takes the same arguments and sets the default used when `client=` is omitted. `cache=` writes raw Jev answers to disk keyed by state and question, so re-running a script over the same data is free.
+
+On a big column, `errors="skip"` means one bad request doesn't sink the other 49,999. Good answers are cached as they arrive, so running the same call again only re-sends the rows that failed. The SDK already retries 429s and 5xx with backoff before anything counts as failed.
+
+To see what a call would cost before running it:
+
+```python
+with hunch.dry_run() as plan:
+    df.hunch.ask({...})
+plan   # Plan(requests=8214, questions=16428, items=50000)
+```
+
+Nothing is sent inside the block and nothing is cached. Verbs return placeholder answers so the rest of your code keeps running. Rematches from `split="rematch"` aren't counted, since they depend on real answers.
 
 Big columns get a progress bar. Any call that needs 10 or more requests shows one, counting requests rather than rows, so it already reflects dedupe and cache hits. `generate` shows an elapsed timer while it waits on the LLM. `progress=True` forces it on, `progress=False` turns it off.
 

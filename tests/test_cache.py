@@ -26,7 +26,7 @@ def test_policy_changes_do_not_refetch(tmp_path) -> None:
     fake = FakeJev(handler)
     loose = Client(client=fake, cache=tmp_path)
     assert classify("VP", ["Sales", "Other"], detail=True, client=loose).shape == "split"
-    strict = Client(client=fake, cache=tmp_path, policy=ShapePolicy(unsure_confidence=0.6))
+    strict = Client(client=fake, cache=tmp_path, policy=ShapePolicy(unsure_peak=0.7))
     assert classify("VP", ["Sales", "Other"], detail=True, client=strict).shape == "unsure"
     assert len(fake.calls) == 1  # shape is a code policy over cached raw answers
 
