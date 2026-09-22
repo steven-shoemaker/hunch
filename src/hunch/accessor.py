@@ -30,6 +30,19 @@ class HunchAccessor:
     def where(self, statement: str, **kw: Any) -> Any:
         return verbs.where(self._obj, statement, **kw)
 
+    def verify(self, source: Any, **kw: Any) -> Any:
+        return verbs.verify(self._obj, source, **kw)
+
+    def discover(self, n: int = 8, **kw: Any) -> Any:
+        from hunch.combine import discover
+
+        return discover(self._obj, n, **kw)
+
+    def refine(self, checks: Any, **kw: Any) -> Any:
+        from hunch.combine import refine
+
+        return refine(self._obj, checks, **kw)
+
     def pick(self, instructions: str, **kw: Any) -> Any:
         return verbs.pick(self._obj, instructions, **kw)
 

@@ -39,6 +39,8 @@ class Answer(_Shaped):
     confidence: float
     """How peaked the distribution is (0–1). Not whether the label is true."""
     shape: Shape
+    by: str | None = None
+    """Who chose the label when an LLM policy was set: "jev" or "llm". None otherwise."""
 
     @property
     def top(self) -> str:

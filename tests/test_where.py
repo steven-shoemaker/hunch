@@ -60,3 +60,11 @@ def test_accessor() -> None:
     df = frame()
     assert list(df.hunch.where("probably likes cats", client=jev).index) == [1, 3]
     assert list(df["bio"].hunch.check("likes cats", client=jev)) == [True, False, True]
+
+
+def test_where_detail_on_a_series_returns_a_frame() -> None:
+    bios = frame()["bio"]
+    out = where(bios, "probably likes cats", detail=True, client=Client(client=FakeJev(cats), max_workers=1))
+    assert list(out.columns) == ["bio", "match", "match_p"]
+    unnamed = where(pd.Series(["I have two cats."]), "likes cats", detail=True, client=Client(client=FakeJev(cats)))
+    assert list(unnamed.columns) == ["value", "match", "match_p"]

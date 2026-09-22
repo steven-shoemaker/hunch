@@ -1,4 +1,4 @@
-"""Draft 20 tweets with an LLM, rank them with Jev, let Jev pick the winner.
+"""Draft 20 tweets with an LLM, rank them with Jev, let Jev pick the winner, then polish it.
 
 Needs TYPESAFE_API_KEY and OPENROUTER_API_KEY in the environment (e.g. `set -a; . .env`).
 """
@@ -36,3 +36,16 @@ winner = hunch.pick(
     "the tweet most likely to make a Python developer install hunch",
 )
 print("WINNER\n", winner)
+
+final = hunch.refine(
+    winner,
+    {
+        "accurate": "describes the library correctly according to the readme in context",
+        "install": "includes the command pip install hunch-jev",
+        "calm": "uses no exclamation marks, hashtags, or hype words",
+        "short": "is under 280 characters",
+    },
+    context={"readme": readme},
+    detail=True,
+)
+print(f"\nFINAL (passed={final.passed}, rewrites={final.rounds})\n", final.text)

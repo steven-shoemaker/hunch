@@ -2,280 +2,258 @@
 
 ![hunch — lists in, lists out](https://raw.githubusercontent.com/steven-shoemaker/hunch/main/docs/banner.png)
 
-Plain functions on Jev. Lists in, lists out.
-
-[Jev](https://docs.typesafe.ai) is TypeSafe's System One model. You send it some state and a typed question, and it sends back a label, a score, or a yes/no probability instead of a paragraph. I think it's the most useful thing to happen to "AI in a for loop" in a while. Calling it raw is fiddly, though: build a state object, build a question object, dig the answer out of the response. hunch is the version I wanted, where each of those is one function call and you can hand it a list or a pandas column instead of one thing at a time.
-
-The rule the whole library follows: Jev decides, your code owns the workflow, and if an LLM is involved at all it only gets to propose candidates.
+**Judgment as a Python function.** Hand hunch a column, ask it a question, get an answer for every row that your code can branch on.
 
 ```python
 import hunch
 
+themes = reviews.hunch.discover(6)                    # an LLM reads a sample and names the categories
+reviews["theme"] = reviews.hunch.classify(themes)     # Jev files all 40,000 rows into them
+angry = reviews.hunch.where("the customer is angry")  # a WHERE clause that understands English
+```
+
+That's three lines. Duplicates are asked once, requests run in parallel, and every answer comes back with its probabilities. Nobody writes a prompt or parses JSON.
+
+`pip install hunch-jev`
+
+## Why this exists
+
+[Jev](https://docs.typesafe.ai) is TypeSafe's System One model: a classifier with frontier-level intelligence that needs no fine-tuning. You give it some state and a typed question, and it answers with a label, a score on your rubric, or a yes/no probability. It doesn't write paragraphs. That makes it the right tool for the enormous number of jobs where you'd otherwise prompt an LLM and hope the answer parses.
+
+Calling Jev directly means building state objects and question objects and digging answers out of responses, one row at a time, in your own loop. hunch is the version I wanted. Every judgment is one function call, and it works the same on a string, a list, or a DataFrame.
+
+The rule hunch follows everywhere: **Jev decides, your code owns the workflow, and an LLM only ever proposes.** LLMs are great at writing and brainstorming, and unreliable as the final decision-maker. So they draft the tweets, name the categories, and take the rows Jev wasn't sure about. Jev makes the calls, and your code keeps the thresholds and weights.
+
+## A tour
+
+### Label anything
+
+```python
 hunch.classify("This product is amazing!", ["positive", "negative", "neutral"])
 # 'positive'
 
-hunch.classify(df["JOB_TITLE"], ["Sales", "Engineering", "Marketing"])
-# Series of labels, same index
-
-hunch.score("Critical system failure", ["cosmetic", "degraded, workaround exists", "down for everyone"])
-# 1.87  (position on the scale, 0 .. n-1)
-
-hunch.check("BUY NOW!!!", "is unsolicited advertising")
-# True
-
-drafts = hunch.generate(str, n=20, instructions="tweets introducing hunch")   # an LLM writes
-hunch.pick(drafts, "most likely to make a Python developer install it")      # Jev chooses
-# 'Most of my "AI" code was a for loop around a prompt and a JSON parser. ...'
+df["function"] = df["title"].hunch.classify(["Sales", "Engineering", "Marketing", "Finance"])
+df["severity"] = df["ticket"].hunch.score(["cosmetic", "degraded, workaround exists", "blocked", "outage"])
+df["spam"]     = df["email"].hunch.check("is unsolicited advertising")
 ```
 
-## Install
+`classify` picks a label, `score` places each row on an ordered scale you describe, and `check` answers yes or no. Labels can be a list, an `Enum`, or a dict of label to description for when the names alone are ambiguous. A Series comes back as a Series on the same index.
 
-```sh
-pip install hunch-jev
+### Filter by meaning
+
+```python
+df.hunch.where("might yell at a waiter for getting their order wrong")
+df.hunch.where("is an economic buyer for a product like ours", columns=["title", "company"], threshold=0.7)
 ```
 
-Python 3.10+. Set `TYPESAFE_API_KEY` in your environment, or call `hunch.configure(api_key=...)` at startup. Keys don't belong in source files.
+`where` keeps the rows a statement holds for, strongest match first, and returns them whole. `columns=` limits what Jev reads.
+
+### Ask five things at once
+
+```python
+from hunch import Classify, Rate, Check
+
+df = df.join(df.hunch.ask({
+    "kind":     Classify(["bug", "feature request", "question"]),
+    "severity": Rate(["cosmetic", "degraded", "blocked", "outage"]),
+    "angry":    Check("the customer is frustrated"),
+    "refund":   Check("asks for money back"),
+}))
+```
+
+Every question about a row goes in one Jev request, and the answers come back as columns ready to `join`.
+
+### Know when it's unsure
+
+Every answer carries its distribution, and hunch sorts each one into a **shape**: `sure` when one label dominates, `split` when two are close, `unsure` when the evidence is flat. Tell it what to do with the shaky ones:
+
+```python
+seniority = df["title"].hunch.classify(["IC", "Manager", "Director", "Executive"],
+                                       split="rematch", unsure="review")
+```
+
+`split="rematch"` re-asks between just the top two, and only for the rows that were split. `unsure="review"` flags the rest for a person.
+
+### Hand the hard ones to an LLM
+
+```python
+seniority = df["title"].hunch.classify(LEVELS, unsure=hunch.anthropic())
+```
+
+Jev answers every row. The few it's unsure about go to the LLM, which has to choose from the same labels. So you pay for Jev on most rows and for a reasoning model only where it earns its cost. With `detail=True`, a `label_by` column shows which rows the LLM decided.
+
+### Find the categories you didn't know you had
+
+```python
+themes = hunch.discover(tickets["body"], 8, instructions="by what the customer needs")
+# {'Billing error': 'charged wrongly or twice...', 'Login trouble': '...', ..., 'other': '...'}
+tickets["theme"] = tickets["body"].hunch.classify(themes)
+```
+
+An LLM reads a sample and proposes categories with descriptions. The result plugs straight into `classify`, and Jev files every row. An `other` bucket is included, so nothing gets forced into a category it doesn't fit.
+
+### Draft, check, fix
+
+```python
+hunch.refine("hunch is a cool new library for AI stuff, check it out!!", {
+    "accurate": "describes the library correctly according to the readme in context",
+    "concrete": "names one specific thing the library does",
+    "install":  "includes the command pip install hunch-jev",
+    "calm":     "uses no exclamation marks or hype words",
+}, context={"readme": README})
+```
+
+The LLM rewrites, and Jev checks every draft against your rules. Only the drafts that failed go back, each told which checks it missed, until everything passes or the rounds run out. One warning from testing this: checks only test what you ask. Without the `accurate` check and the README as context, the model happily wrote a fluent, calm, install-command-bearing tweet describing hunch as an embeddings library.
+
+### Catch an agent making things up
+
+```python
+claims = ["skips None values", "adds a cache", "renames the function"]
+hunch.verify(claims, diff)
+# [True, False, False]
+```
+
+`verify` checks whether each claim is supported by a source: one document for all claims, or one per row. Use it as the last step of anything an LLM or agent produced, like review-bot comments, extracted fields, or summaries.
+
+### Generate, rank, pick
+
+```python
+drafts = hunch.generate(str, n=20, instructions="tweets introducing hunch", context=README)
+ranked = hunch.rank(drafts, {"hook": "How strong is the first line?", "clarity": "How clear is it?"},
+                    levels=["weak", "okay", "strong", "excellent"], weights={"hook": 2, "clarity": 1})
+winner = hunch.pick([row.item for row in ranked[:5]], "most likely to make a developer install it")
+```
+
+`generate` makes typed data: `str`, dataclasses, pydantic models, anything pydantic validates. `rank` scores every candidate on weighted dimensions, and `pick` puts the finalists head to head. Weights live in your code, so re-ranking costs nothing.
+
+### Measure before you trust
+
+```python
+pred = sample["title"].hunch.classify(LEVELS, detail=True)
+hunch.evaluate(pred, sample["true_level"])
+# Evaluation(accuracy=91.0% on 100 rows, by shape: sure: 98% of 71, split: 79% of 19, unsure: 60% of 10)
+
+cut = hunch.tune_threshold(sample.hunch.check("is a buyer", detail=True), sample["is_buyer"], precision=0.9)
+```
+
+Label 50 to 100 rows by hand. `evaluate` shows whether `sure` really means right on your data. `tune_threshold` picks the `check` / `where` cutoff that hits the precision or recall you need, instead of a number that felt right. The numbers in that comment are illustrative, since yours will depend on your data.
 
 ## Where it fits
 
-Anywhere a person is reading rows and making a call. A few that come up:
+Anywhere a person is reading rows and making a call.
 
-**Engineering: ticket triage, and a verifier step for a code review agent.**
+**GTM: ICP fit.** Pass the ideal customer profile as context and let Jev read every account against it.
+
+```python
+ICP = "B2B SaaS, 200 to 2,000 employees, sells to mid-market, has a RevOps function, US or UK."
+prospects = prospects.join(prospects.hunch.ask({
+    "fit":   Rate(["not our buyer", "partial fit", "good fit", "textbook ICP"], "How well does this account match the ICP?"),
+    "buyer": Check("this person could sign or sponsor a purchase for their team"),
+}, context={"icp": ICP}))
+outreach = prospects[prospects.buyer].nlargest(50, "fit")
+```
+
+**Engineering: triage, and a verifier for a code review agent.**
 
 ```python
 tickets = tickets.join(tickets.hunch.ask({
     "kind":     Classify(["bug", "feature request", "question"]),
     "severity": Rate(["cosmetic", "degraded, workaround exists", "blocked", "outage"]),
 }))
-
-# Keep only the review-bot comments Jev agrees describe a real defect in the diff
-real = comments.hunch.where("describes an actual defect present in the diff",
-                            columns=["comment"], context={"diff": diff}, threshold=0.7)
+real = bot_comments[hunch.verify(bot_comments["comment"], diff)]   # drop comments the diff doesn't support
 ```
 
-**GTM: ICP fit.** Pass the ideal customer profile as context and let Jev read every row against it.
-
-```python
-ICP = "B2B SaaS, 200 to 2,000 employees, sells to mid-market, has a RevOps or sales ops function, US or UK."
-
-prospects = prospects.join(prospects.hunch.ask({
-    "fit":   Rate(["not our buyer", "partial fit", "good fit", "textbook ICP"], "How well does this account match the ICP in context?"),
-    "buyer": Check("this person could sign or sponsor a purchase for their team"),
-}, context={"icp": ICP}))
-
-outreach = prospects[prospects.buyer].nlargest(50, "fit")
-```
-
-**SEO: intent and thin content, then a title tag Jev picks from LLM drafts.**
+**SEO: intent, thin pages, and a title tag Jev picks from LLM drafts.**
 
 ```python
 pages = pages.join(pages.hunch.ask({
     "intent": Classify(["informational", "commercial", "transactional", "navigational"]),
-    "thin":   Check("the page is thin content that adds nothing over the top results for its query"),
+    "thin":   Check("adds nothing over the top results for its query"),
 }))
-titles = hunch.generate(str, n=10, instructions="title tags for this page", context=page)
-best   = hunch.pick(titles, "most likely to earn the click for the target query", context=page)
+best = hunch.pick(hunch.generate(str, n=10, instructions="title tags", context=page), "most likely to earn the click")
 ```
 
 **Finance: anomalies and categorization.**
 
 ```python
-suspect = txns.hunch.where("looks like a duplicate or erroneous charge",
-                           columns=["merchant", "amount", "date", "memo"])
+suspect = txns.hunch.where("looks like a duplicate or erroneous charge", columns=["merchant", "amount", "date", "memo"])
 txns["account"] = txns.hunch.classify(GLAccount, columns=["merchant", "memo"])   # your Enum of GL accounts
 ```
 
-## Verbs
+## Bring your own model
 
-| Verb | Jev primitive | Returns |
+Jev is always the judge. The LLM for `generate`, `discover`, `refine`, and escalation can be whatever your team already pays for:
+
+```python
+hunch.configure(llm=hunch.anthropic())                          # Claude, via the anthropic SDK
+hunch.configure(llm=hunch.openai(model="gpt-5-mini"))
+hunch.configure(llm=hunch.azure(deployment="my-gpt"))           # Azure OpenAI
+hunch.configure(llm=hunch.openrouter(model="z-ai/glm-5.3-flash"))
+hunch.configure(llm=hunch.ollama("qwen3"))                      # local, nothing leaves your machine
+hunch.configure(llm=lambda system, user: my_gateway(system, user))  # anything else
+```
+
+Keys come from the usual environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, `OPENROUTER_API_KEY`) or `api_key=`. `hunch.anthropic()` needs `pip install anthropic` and defaults to `claude-opus-5`; pass `model=` for another Claude. Any verb that uses an LLM also takes `llm=` to override the default for one call.
+
+## Built for real columns
+
+- **Dedupe and cache.** A value is asked once. With `cache="~/.cache/hunch"`, answers persist on disk, so re-running a notebook is free.
+- **Parallel.** `max_workers` threads for normal calls. The `_async` twins run requests on your event loop through the async SDK client, up to `max_concurrency` at a time.
+- **Survives failures.** With `errors="skip"`, a request that fails after the SDK's retries comes back `None` with a warning, instead of sinking the other 49,999. Running the same call again re-sends only the failures.
+- **Rate limits.** `max_rps=20` caps requests per second.
+- **Know the cost first.** Code inside `with hunch.dry_run() as plan:` sends nothing and tells you how many requests it would have made.
+- **Progress.** Calls needing 10 or more requests show a bar that counts requests, so dedupe and cache hits are already reflected. `generate` shows a timer.
+
+```python
+hunch.configure(api_key=..., llm=hunch.anthropic(), cache="~/.cache/hunch",
+                max_workers=8, max_concurrency=64, max_rps=None, errors="skip", progress="auto")
+```
+
+## Reference
+
+| Verb | What it does | Returns |
 | --- | --- | --- |
-| `classify(data, labels, multi_label=False, instructions=None)` | Choice, or one Noul per label | label, Enum member, or list of labels |
-| `score(data, levels, instructions=None)` | Score | float position on the scale, or `{dim: float}` |
-| `check(data, statement, criteria=None, threshold=0.5)` | Noul | bool, or `{name: bool}` |
-| `pick(candidates, instructions)` | Choice over the candidates | the winning candidate |
-| `rank(candidates, dimensions, levels, weights=None)` | Score per dimension | `Ranked` rows, best first |
-| `generate(target, n=1, instructions=None)` | your LLM, validated by pydantic | `target` or `list[target]` |
-| `ask(data, {name: Classify(...) \| Rate(...) \| Check(...)})` | all of the above, one request per item | dict per item, or a DataFrame for a Series |
-| `where(data, statement, columns=None, threshold=0.5)` | Noul per row, then filter | the rows that match, strongest first |
+| `classify(data, labels, multi_label=False, split=, unsure=)` | Pick one label (or several) | label, Enum member, or list |
+| `score(data, levels, instructions=)` | Place on an ordered scale, 2 to 10 levels | float from 0 to n-1, or `{dim: float}` |
+| `check(data, statement, criteria=, threshold=0.5)` | Yes or no | bool, or `{name: bool}` |
+| `where(data, statement, threshold=0.5)` | Keep rows the statement holds for | the matching rows, strongest first |
+| `ask(data, {name: Classify \| Rate \| Check})` | Several questions, one request per row | dict per item, or a DataFrame |
+| `pick(candidates, instructions)` | Choose the best candidate | the winner, or its index label |
+| `rank(candidates, dimensions, levels, weights=)` | Weighted multi-dimension ranking | `Ranked` rows, or a sorted DataFrame |
+| `generate(target, n=1, instructions=)` | LLM makes typed data | `target` or `list[target]` |
+| `discover(data, n=8, instructions=)` | LLM proposes categories | `{name: description}` for `classify` |
+| `refine(data, checks, rounds=3)` | LLM rewrites until Jev's checks pass | text in the same container |
+| `verify(claims, source)` | Is each claim supported by the source? | bool, or a Series named `supported` |
+| `evaluate(predicted, truth)` | Accuracy, by shape, misses, confusion matrix | `Evaluation` |
+| `tune_threshold(p, truth, precision= \| recall=)` | Pick a cutoff from labeled rows | `Threshold` |
 
-Hand any verb one item and you get one answer back. Hand it a list, a tuple, or a pandas Series and you get the same container back, same length, same index. Hand it a DataFrame and each row is the thing being judged, so Jev sees every column, and the answers come back on the frame's index ready to `join`. Pass `columns=` to any verb to limit which columns of a DataFrame Jev reads; the answers still line up with the whole frame. Duplicate values are only asked once, and the distinct ones run in parallel across `max_workers` threads. All of them take `context=` for extra state that should ride along with the input, and `client=` if you don't want the default. Each has an `_async` twin that runs its requests on your event loop through the async SDK client, up to `max_concurrency` at a time, which is the one to use inside a service.
+Every verb takes a string, a list, a Series, or a DataFrame, and returns the same shape. With a DataFrame, each row is the thing being judged. The Jev verbs take `context=` for state that rides along with each row, `columns=` to narrow a DataFrame, and `client=`. Most have an `_async` twin, and all are on the `df.hunch` / `series.hunch` accessor.
 
-`labels` can be a plain list, an `Enum` class (you get members back, not strings), or a dict of label to description when the names alone are ambiguous. On `score` and `check`, `instructions` can be a dict of name to question. Those go out as one request per item and you get a dict back per item, which is how you score five dimensions without five round trips.
+**`detail=True`** returns the full distribution. On pandas it spreads into columns, like `label`, `label_p`, `label_confidence`, `label_shape` for classify, `score_level` for score, and `check_p` for check. On lists you get `Answer`, `Rating`, `Feeling`, `Pick`, or `Refined` objects. `Answer.on(sure=, split=, unsure=)` branches on shape for custom logic.
 
-### Semantic WHERE
+**Context per question.** In `ask`, `Classify`, `Rate`, and `Check` take their own `context=`, so something only one question should see doesn't leak into the others.
 
-`where` is the filter you wish SQL had. It keeps the rows for which a statement holds and returns them strongest match first. On a DataFrame, Jev reads every column unless you pass `columns=`; the whole row comes back either way.
-
-```python
-df.hunch.where("probably likes cats")
-df.hunch.where("is a decision-maker at a company that sells to enterprises", columns=["title", "company"], threshold=0.7)
-```
-
-`detail=True` returns all rows with `match` and `match_p` columns so you can draw your own line. Statements about evidence in the row filter well. Predictions about behavior cluster near 0.3 to 0.4 when the row says nothing either way, so rank those instead of thresholding them:
-
-```python
-cats  = df.hunch.where("probably likes cats", columns=["name", "age", "bio"], threshold=0.7)
-scary = df.hunch.where("might yell at a waiter for getting their order wrong",
-                       columns=["name", "age", "bio"], detail=True).nlargest(5, "match_p")
-```
-
-### `df.hunch`
-
-Every verb is also on a `.hunch` accessor for DataFrames and Series, so it reads left to right in a notebook:
-
-```python
-df["review"].hunch.classify(["positive", "negative", "neutral"])
-df.hunch.ask({"vibe": Classify([...]), "red_flag": Check("...")})
-df.hunch.rank({"hook": "...", "clarity": "..."}, levels=[...])
-best = df.hunch.pick("the best first date for the person in context", context={"looking_for": ME})
-```
-
-### Several questions, one request
-
-When you want more than one thing about the same data, `ask` sends every question in a single Jev request per item. Each question is a small spec with the same arguments as its verb. A Series comes back as a DataFrame on the same index, so it joins straight onto your frame.
-
-```python
-from hunch import ask, Classify, Rate, Check
-
-answers = ask(prospects["JOB_TITLE"], {
-    "function": Classify(functions, FUNCTION_INSTRUCTIONS),
-    "seniority": Classify(seniorities, SENIORITY_INSTRUCTIONS),
-    "urgent": Check("this person should be contacted this week"),
-    "fit": Rate(["poor", "okay", "strong"], "How well does this title fit an enterprise sales motion?"),
-})
-prospects = prospects.join(answers)
-```
-
-Context on the call rides along with every question. When only one question should see something, put it on that question instead: `Rate([...], "How compatible is this profile with the person in context?", context={"looking_for": ME})`. Questions whose context differs can't share a request, so `ask` groups them and sends one request per group.
-
-With a Series or DataFrame, `detail=True` spreads each answer into columns instead of handing you objects: `fit`, `fit_level`, `fit_confidence`, `fit_shape` for a score; `label`, `label_p`, `label_confidence`, `label_shape` for a classify; `check`, `check_p` for a check. No lambdas to unpack anything.
-
-`pick` on a Series or DataFrame returns the winner's index label, so `df.loc[best]` is the row. `rank` returns a DataFrame with `composite` and one column per dimension, sorted best first, on the same index.
-
-### `detail=True`
-
-The bare return is the answer. `detail=True` returns the whole distribution:
-
-| Verb | Detail type | Fields |
-| --- | --- | --- |
-| `classify` | `Answer` | `.label .p .probabilities .confidence .shape .top2 .on()` |
-| `classify(multi_label=True)` | `MultiAnswer` | `.labels .probabilities .threshold` |
-| `score` | `Rating` | `.score .level .normalized .probabilities .legend .confidence .shape .on()` |
-| `check` | `Feeling` | `.p .threshold`, truthy at threshold |
-| `pick` | `Pick` | `.winner .ranked .confidence .shape .on()` |
-
-`.shape` is a judgment about the distribution, and the cutoffs are yours, not Jev's:
-
-| Shape | Meaning |
-| --- | --- |
-| `sure` | One option dominates |
-| `split` | Two options are close |
-| `unsure` | Flat or weak evidence |
-
-The two common policies are arguments on `classify` (and on `Classify(...)` inside `ask`):
-
-```python
-seniority = hunch.classify(df["title"], ["IC", "Manager", "Director"], split="rematch", unsure="review")
-```
-
-`split="rematch"` re-asks between the top two labels, only for the rows that were split, batched and cached like everything else. Any other value is used as the label for those rows. `unsure="review"` does the same for flat distributions. Both default to keeping the first answer. For anything more custom, `detail=True` gives you the `Answer` and `.on(sure=, split=, unsure=)` branches on it; pass a callable for a branch that costs a call.
-
-Cutoffs live on `ShapePolicy` and work on the probabilities alone: `sure_peak`, `unsure_peak`, `split_margin`, `split_mass`. Jev's `confidence` is derived from the top probability, so it carries no extra information and the policy ignores it. Neither says whether the label is correct. A confidently wrong answer is still confident, which is why `evaluate` below exists. Changing the policy never re-runs inference, because the cache stores the raw distribution and the shape is computed on the way out.
-
-## Check it before you trust it
-
-Label 50 to 100 rows by hand, then measure:
-
-```python
-pred = hunch.classify(sample["title"], LEVELS, detail=True)
-hunch.evaluate(pred, sample["true_level"])
-# Evaluation(accuracy=91.0% on 100 rows, by shape: sure: 98% of 71, split: 79% of 19, unsure: 60% of 10)
-```
-
-`by_shape` tells you whether "sure" really means right on your data, and so which rows to send for review. `.errors` lists every miss, and `.table()` gives the confusion matrix.
-
-For `check` and `where`, pick the cutoff from data instead of by feel:
-
-```python
-p = hunch.check(sample, "is an economic buyer", detail=True)
-cut = hunch.tune_threshold(p, sample["is_buyer"], precision=0.9)
-# Threshold(threshold=0.71, precision=0.92, recall=0.64, ...)
-buyers = df.hunch.where("is an economic buyer", threshold=cut.threshold)
-```
-
-`precision=` gives the lowest cutoff that keeps that share of matches correct. `recall=` gives the highest cutoff that still catches that share of true matches. With neither, it maximizes F1.
-
-## Generate, rank, pick
-
-This is the part where an LLM is allowed in the room. It writes the candidates. Jev scores them and picks. The weights stay in your code, so re-ranking after you change your mind costs nothing.
-
-```python
-import hunch
-
-hunch.configure(llm=hunch.openrouter(), cache="~/.cache/hunch")
-
-tweets = hunch.generate(str, n=20, instructions="Tweets introducing hunch to Python developers", context=README)
-
-ranked = hunch.rank(
-    tweets,
-    {"hook": "How strong is the first line?", "clarity": "How clearly does it say what hunch does?", "specific": "How concrete, not generic, is it?"},
-    levels=["weak", "okay", "strong", "excellent"],
-    weights={"hook": 2, "clarity": 1, "specific": 1},
-)
-finalists = [row.item for row in ranked[:5]]
-
-winner = hunch.pick(finalists, "the tweet most likely to make a Python developer install hunch")
-```
-
-`generate` accepts `str`, `int`, dataclasses, `TypedDict`s, pydantic models, `list[str]`, and any other type pydantic can validate. Large `n` is drawn in batches of 25 that avoid repeating earlier items, and the result is cached, so re-running a notebook cell returns the same items. Pass `fresh=True` for a new draw. `hunch.openai`, `hunch.cerebras`, and `hunch.openrouter` are OpenAI-compatible adapters; pass `llm=` on `configure()` or on `generate()`.
-
-## Client
-
-```python
-jev = hunch.Client(
-    api_key=..., model="jev-latest", cache="~/.cache/hunch",
-    max_workers=8,          # threads for sync calls
-    max_concurrency=64,     # requests in flight for _async calls
-    max_rps=None,           # cap requests per second, e.g. 20
-    errors="raise",         # or "skip": failed rows come back None, with a warning
-    policy=ShapePolicy(...),
-)
-hunch.classify(x, labels, client=jev)
-jev.usage   # calls, cache hits, tokens, model
-```
-
-`hunch.configure(...)` takes the same arguments and sets the default used when `client=` is omitted. `cache=` writes raw Jev answers to disk keyed by state and question, so re-running a script over the same data is free.
-
-On a big column, `errors="skip"` means one bad request doesn't sink the other 49,999. Good answers are cached as they arrive, so running the same call again only re-sends the rows that failed. The SDK already retries 429s and 5xx with backoff before anything counts as failed.
-
-To see what a call would cost before running it:
-
-```python
-with hunch.dry_run() as plan:
-    df.hunch.ask({...})
-plan   # Plan(requests=8214, questions=16428, items=50000)
-```
-
-Nothing is sent inside the block and nothing is cached. Verbs return placeholder answers so the rest of your code keeps running. Rematches from `split="rematch"` aren't counted, since they depend on real answers.
-
-Big columns get a progress bar. Any call that needs 10 or more requests shows one, counting requests rather than rows, so it already reflects dedupe and cache hits. `generate` shows an elapsed timer while it waits on the LLM. `progress=True` forces it on, `progress=False` turns it off.
+**Shapes** come from `ShapePolicy(sure_peak=0.8, unsure_peak=0.5, split_margin=0.15, split_mass=0.75)`, computed from the probabilities alone. Jev's `confidence` is derived from the top probability, so it adds nothing. None of these say whether a label is correct, which is what `evaluate` is for. Changing the policy never re-runs inference.
 
 ## Examples
 
-Each is a single file with the data inline, so you can run it as-is. Three need only `TYPESAFE_API_KEY`. The ones that `generate` also want an OpenRouter key.
+Single files with the data inline or generated. The first three need only `TYPESAFE_API_KEY`, and the rest also use an LLM key.
 
 | File | Shows |
 | --- | --- |
-| [`find_angry_reviews.py`](examples/find_angry_reviews.py) | `check` over a column as a boolean mask, ranking by probability, several checks in one request |
-| [`dating_profiles.py`](examples/dating_profiles.py) | `generate` typed profiles, `ask` two questions per row, `score` against a described person, `pick` a date, then semantic `where` for cat people and waiter-yellers |
-| [`classify_job_titles.py`](examples/classify_job_titles.py) | `classify` with Enums, `detail=True`, and `.on()` routing sure / split / unsure with a rematch |
-| [`triage_tickets.py`](examples/triage_tickets.py) | `score` on two scales in one request, multi-label `classify`, paging policy kept in code |
-| [`introduce_hunch.py`](examples/introduce_hunch.py) | `generate` 20 tweets with an LLM, `rank` them on weighted dimensions, `pick` the winner |
-| [`organize_downloads.py`](examples/organize_downloads.py) | An LLM proposes a folder taxonomy, `classify` assigns every file, the script moves them. `--dry-run` prints the plan |
+| [`find_angry_reviews.py`](examples/find_angry_reviews.py) | `check` as a boolean mask, ranking by probability, several checks in one request |
+| [`classify_job_titles.py`](examples/classify_job_titles.py) | `classify` with Enums, shapes, and a rematch for split rows |
+| [`triage_tickets.py`](examples/triage_tickets.py) | Two `score` scales in one request, multi-label tags, paging policy in code |
+| [`review_themes.py`](examples/review_themes.py) | `discover` themes in generated reviews, `classify` with LLM escalation, `where` for churn risk |
+| [`dating_profiles.py`](examples/dating_profiles.py) | Typed `generate`, `ask`, `score` against a described person, `pick`, and `where` for cat people and waiter-yellers |
+| [`introduce_hunch.py`](examples/introduce_hunch.py) | `generate` 20 tweets, `rank`, `pick` the winner, then `refine` it against the README |
+| [`organize_downloads.py`](examples/organize_downloads.py) | An LLM proposes folders, `classify` assigns every file, the script moves them. `--dry-run` prints the plan |
 
 ## What this is not
 
-Jev does not invent labels. Whatever you pass as `labels` is the entire set of allowed answers, and that constraint is the point. `generate` is the one place invention happens, and it has no tools and takes no actions. If you want open-ended writing or a multi-step agent, this is the wrong library, on purpose.
+Jev never invents labels. Whatever you pass as `labels` is the entire set of allowed answers, and that constraint is the point. LLMs are only in the building to propose: drafts, categories, rewrites, second opinions on hard rows. They have no tools and take no actions. If you want open-ended writing or a multi-step agent, this is the wrong library, on purpose.
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed between versions.
 
 ## License
 

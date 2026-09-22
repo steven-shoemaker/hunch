@@ -12,7 +12,7 @@ from pydantic_core import to_jsonable_python
 from hunch import engine
 from hunch.client import Client, resolve
 from hunch.exceptions import HunchError
-from hunch.llm import LanguageModel
+from hunch.llm import LanguageModel, as_llm
 
 
 BATCH = 25
@@ -40,7 +40,7 @@ def generate(
     if n < 1:
         raise HunchError("generate() needs n >= 1.")
     jev = resolve(client)
-    model = llm or jev.llm
+    model = as_llm(llm) or jev.llm
     if model is None:
         raise HunchError("generate() needs a language model: pass llm= here or on configure().")
     name = getattr(target, "__name__", str(target))

@@ -136,3 +136,81 @@ def cerebras(
         extra_body={"reasoning_effort": reasoning_effort},
         timeout=timeout,
     )
+
+
+class AnthropicModel:
+    """Claude through the official anthropic SDK (pip install anthropic)."""
+
+    def __init__(self, *, api_key: str | None, model: str, max_tokens: int = 16000, client: Any | None = None) -> None:
+        if client is None:
+            try:
+                import anthropic as sdk
+            except ImportError as error:
+                raise HunchError("hunch.anthropic() needs the anthropic SDK: pip install anthropic") from error
+            client = sdk.Anthropic(api_key=api_key) if api_key else sdk.Anthropic()
+        self.client = client
+        self.model = model
+        self.max_tokens = max_tokens
+        self.name = model
+
+    def complete(self, *, system: str, user: str) -> str:
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        if response.stop_reason == "refusal":
+            raise HunchError(f"{self.model} declined the request.")
+        text = "".join(block.text for block in response.content if block.type == "text").strip()
+        if not text:
+            raise HunchError("Language model returned no text.")
+        return text
+
+
+class FunctionModel:
+    """Any function (system, user) -> str used as an LLM."""
+
+    def __init__(self, fn: Any) -> None:
+        self.fn = fn
+        self.name = getattr(fn, "__name__", "function")
+
+    def complete(self, *, system: str, user: str) -> str:
+        text = self.fn(system, user)
+        if not isinstance(text, str) or not text.strip():
+            raise HunchError("The llm function returned no text.")
+        return text.strip()
+
+
+def as_llm(llm: Any) -> Any:
+    """Accept a LanguageModel, or any callable (system, user) -> str. None stays None."""
+    if llm is None or hasattr(llm, "complete"):
+        return llm
+    if callable(llm):
+        return FunctionModel(llm)
+    raise HunchError("llm= must have a complete(system=, user=) method or be a function (system, user) -> str.")
+
+
+def anthropic(api_key: str | None = None, *, model: str = "claude-opus-5", max_tokens: int = 16000) -> AnthropicModel:
+    """Claude via the anthropic SDK. Reads ANTHROPIC_API_KEY (or an `ant auth login` profile)."""
+    return AnthropicModel(api_key=api_key, model=model, max_tokens=max_tokens)
+
+
+def azure(
+    endpoint: str | None = None,
+    *,
+    deployment: str,
+    api_key: str | None = None,
+    timeout: float = 60.0,
+) -> OpenAICompat:
+    """Azure OpenAI via its OpenAI-compatible v1 endpoint. Reads AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY."""
+    base = endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT")
+    key = api_key if api_key is not None else os.environ.get("AZURE_OPENAI_API_KEY")
+    if not base or not key:
+        raise HunchError("Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY, or pass endpoint= and api_key= to azure().")
+    return OpenAICompat(api_key=key, model=deployment, base_url=f"{base.rstrip('/')}/openai/v1", timeout=timeout)
+
+
+def ollama(model: str = "llama3.2", *, host: str = "http://localhost:11434", timeout: float = 120.0) -> OpenAICompat:
+    """A local model served by Ollama (or anything else speaking the OpenAI API on a local port)."""
+    return OpenAICompat(api_key="ollama", model=model, base_url=f"{host.rstrip('/')}/v1", timeout=timeout)

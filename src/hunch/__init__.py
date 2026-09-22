@@ -2,11 +2,12 @@
 
 from hunch.answer import Answer, Feeling, MultiAnswer, Pick, Ranked, Rating
 from hunch.client import Client, configure, default
+from hunch.combine import Refined, discover, discover_async, refine, refine_async
 from hunch.engine import Plan, dry_run
 from hunch.evaluate import Evaluation, Threshold, evaluate, tune_threshold
 from hunch.exceptions import HunchError
 from hunch.generate import generate, generate_async
-from hunch.llm import LanguageModel, OpenAICompat, cerebras, openai, openrouter
+from hunch.llm import LanguageModel, OpenAICompat, anthropic, azure, cerebras, ollama, openai, openrouter
 from hunch.shapes import Shape, ShapePolicy
 from hunch.usage import Usage
 from hunch.verbs import (
@@ -25,6 +26,8 @@ from hunch.verbs import (
     rank_async,
     score,
     score_async,
+    verify,
+    verify_async,
     where,
     where_async,
 )
@@ -51,10 +54,13 @@ __all__ = [
     "Ranked",
     "Rate",
     "Rating",
+    "Refined",
     "Shape",
     "ShapePolicy",
     "Usage",
+    "anthropic",
     "ask",
+    "azure",
     "ask_async",
     "cerebras",
     "check",
@@ -63,21 +69,28 @@ __all__ = [
     "classify_async",
     "configure",
     "default",
+    "discover",
+    "discover_async",
     "dry_run",
     "evaluate",
     "generate",
     "generate_async",
+    "ollama",
     "openai",
     "openrouter",
     "pick",
     "pick_async",
     "rank",
     "rank_async",
+    "refine",
+    "refine_async",
     "score",
     "score_async",
     "tune_threshold",
+    "verify",
+    "verify_async",
     "where",
     "where_async",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"

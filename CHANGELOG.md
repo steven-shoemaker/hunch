@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0
+
+- **LLM + Jev verbs.** The LLM proposes, Jev decides or checks:
+  - `classify(split=llm, unsure=llm)` escalates only the shaky rows to an LLM, which must pick from the same labels. With `detail=True`, `label_by` says who decided.
+  - `discover(data, n)` has an LLM propose categories as `{name: description}`, ready for `classify`. Adds an `other` bucket by default.
+  - `refine(text, checks)` has an LLM rewrite until Jev confirms every check holds, rewriting only the drafts that failed.
+  - `verify(claims, source)` checks each claim against one source or a source per row.
+- **More model providers:** `hunch.anthropic()` (official SDK, `pip install anthropic`), `hunch.azure()`, `hunch.ollama()`, and any function `(system, user) -> str` as `llm=`.
+- New example `review_themes.py`; `introduce_hunch.py` ends with a `refine` step.
+- README rewritten around a tour of what hunch does.
+
 ## 0.7.0
 
 - `errors="skip"` on the client: a request that still fails after the SDK's retries returns `None` for its rows, with a warning, instead of raising. Good answers are cached, so a rerun only re-sends failures.

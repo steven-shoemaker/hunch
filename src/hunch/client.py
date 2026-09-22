@@ -58,7 +58,9 @@ class Client:
             client = TypeSafeClient(**self._sdk)
         self.jev = client
         self._async = async_client
-        self.llm = llm
+        from hunch.llm import as_llm
+
+        self.llm = as_llm(llm)
         self.cache = Cache(cache)
         self.policy = policy or ShapePolicy()
         self.max_workers = max(1, max_workers)

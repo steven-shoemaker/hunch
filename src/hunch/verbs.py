@@ -60,6 +60,8 @@ class Box:
             for r in rows
         ]
         frame = pd.DataFrame(flat, index=self.index)
+        for col in [c for c in frame.columns if str(c).endswith("_by")]:
+            frame[col] = frame[col].fillna("jev")
         if squeeze and not detail:
             return frame.iloc[:, 0]
         return frame
@@ -100,7 +102,10 @@ def bare(value: Any) -> Any:
 
 def flatten(name: str, value: Any) -> dict[str, Any]:
     if isinstance(value, Answer):
-        return {name: value.label, f"{name}_p": value.p, f"{name}_confidence": value.confidence, f"{name}_shape": value.shape}
+        out = {name: value.label, f"{name}_p": value.p, f"{name}_confidence": value.confidence, f"{name}_shape": value.shape}
+        if value.by is not None:
+            out[f"{name}_by"] = value.by
+        return out
     if isinstance(value, Rating):
         return {name: value.score, f"{name}_level": value.level, f"{name}_confidence": value.confidence, f"{name}_shape": value.shape}
     if isinstance(value, Feeling):
@@ -282,9 +287,11 @@ def classify(
     Answer / MultiAnswer with the full distribution. columns= narrows a DataFrame.
 
     split= and unsure= are policies for shaky answers. split="rematch" re-asks between the
-    top two options for rows where two labels were close. Any other value is returned as
-    the label for those rows. unsure=<value> does the same for flat distributions. Both
-    default to keeping the first answer.
+    top two options for rows where two labels were close. An LLM (hunch.anthropic(), any
+    adapter, or a function (system, user) -> str) escalates those rows: it picks from the
+    same labels, and Answer.by says "llm". Any other value is returned as the label for
+    those rows. unsure= does the same for flat distributions. Both default to keeping the
+    first answer.
     """
     jev = resolve(client)
     data_box = box(data, columns)
@@ -345,9 +352,19 @@ def _resolve(
     """Apply split= / unsure= policies. Rematches are batched by top-two pair."""
     if split is KEEP and unsure is KEEP:
         return answers
-    if detail and (split not in (KEEP, "rematch") or unsure is not KEEP):
+    literal_split = split not in (KEEP, "rematch") and not _is_llm(split)
+    literal_unsure = unsure is not KEEP and not _is_llm(unsure)
+    if detail and (literal_split or literal_unsure):
         raise HunchError("Literal split= / unsure= values need detail=False; use .on() for custom detail logic.")
     out = list(answers)
+    for policy, shape in ((split, "split"), (unsure, "unsure")):
+        if _is_llm(policy):
+            from hunch.combine import escalate
+
+            idxs = [i for i, a in enumerate(out) if isinstance(a, Answer) and a.shape == shape]
+            out = escalate(jev, policy, items, idxs, out, keys, describe, back, instructions, context)
+    split = KEEP if _is_llm(split) else split
+    unsure = KEEP if _is_llm(unsure) else unsure
     if split == "rematch":
         groups: dict[tuple[str, ...], list[int]] = {}
         for i, a in enumerate(answers):
@@ -486,7 +503,8 @@ def where(
         match = feelings["check"].fillna(False).astype(bool)
         p = feelings["check_p"] if "check_p" in feelings else match.astype(float) * float("nan")
         if detail:
-            return data.assign(match=match, match_p=p)
+            frame = data if data_box.kind == "frame" else data.to_frame(name=data.name if data.name is not None else "value")
+            return frame.assign(match=match, match_p=p)
         return data[match].loc[p[match].sort_values(ascending=False).index]
     if detail:
         return feelings
@@ -631,6 +649,15 @@ classify_async = _async(classify)
 score_async = _async(score)
 check_async = _async(check)
 where_async = _async(where)
+
+
+def verify(*args: Any, **kwargs: Any) -> Any:  # re-exported for the accessor; defined in combine
+    from hunch.combine import verify as _verify
+
+    return _verify(*args, **kwargs)
+
+
+verify_async = _async(verify)
 pick_async = _async(pick)
 rank_async = _async(rank)
 
@@ -678,6 +705,13 @@ def _dims(spec: Any, default: str | None, base: str) -> dict[str, str]:
             raise HunchError("A statement is required.")
         return {base: default}
     return {base: str(spec)}
+
+
+def _is_llm(value: Any) -> bool:
+    """An LLM policy: a LanguageModel, or a function (system, user) -> str."""
+    return value is not KEEP and not isinstance(value, (str, int, float, bool)) and (
+        hasattr(value, "complete") or callable(value)
+    )
 
 
 def _object(**fields: Any) -> dict[str, Any]:
